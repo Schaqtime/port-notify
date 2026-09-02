@@ -10,3 +10,4 @@ crons = ["*/30 * * * *"]
 [[kv_namespaces]]
 binding = "PORTFOLIO"
 id = "c73ed6dd25fb4455a895a4a46f0b73e7"
+
