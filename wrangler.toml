@@ -1,0 +1,12 @@
+name = "port-notify"
+main = "notify-worker.js"
+compatibility_date = "2026-08-01"
+workers_dev = true
+keep_vars = true
+
+[triggers]
+crons = ["*/30 * * * *"]
+
+[[kv_namespaces]]
+binding = "PORTFOLIO"
+id = "c73ed6dd25fb4455a895a4a46f0b73e7"
