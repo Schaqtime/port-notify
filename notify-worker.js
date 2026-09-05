@@ -1504,15 +1504,21 @@ async function paymentReminders(env, keys, today, alerted, push){
    Bugün + önümüzdeki 3 günü kapsar. "ödendi" işaretliler atlanır.
    Ödenecek bir şey yoksa mesaj GÖNDERİLMEZ (boş bildirimle rahatsız etmez). */
 const AY_ADLARI = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"];
-/* Uygulamadaki finSubNextDue ile aynı mantık: next varsa o; Aylık → ayın 1'i;
-   Haftalık → +7 gün; ay adı yazılıysa o ayın 1'i (geçtiyse gelecek yıl). Yoksa null. */
+/* P.8: uygulamadaki finSubNextDue ile BİREBİR eşitlendi (eskiden worker kendi kuralını
+   uyguluyordu — "1'i geçtiyse gelecek ayın 1'i" — bu da ayın 27-30'unda "3 gün sonra",
+   1'inde tekrar "bugün" diye yığılmaya, ay ortasında ise hiç görünmemeye sebep oluyordu).
+   Aylık: uygulama da belirli gün vermiyor, yalnız "Bu ay" diyor → HER ZAMAN bu ayın 1'i,
+   ileri SARILMAZ. Sonuç: hatırlatma yalnız ayın 1'inde (diff=0) düşer, ay içinde tekrarlamaz.
+   Haftalık: uygulama da belirli gün vermiyor, her zaman "bu hafta" sayıyor (finSubStatus'ta
+   period==="week" hep "yaklaşıyor") → worker da HER GÜN "bugün" kabul eder; eskiden "+7 gün"
+   hesaplandığı için fark hep 7 çıkıyor, 0-3 günlük pencereye hiç girmiyordu. */
 function subNextDue(it, today) {
   if (it.next) return (it.next + "").slice(0, 10);
   const y = +today.slice(0, 4), m = +today.slice(5, 7) - 1;
   const iso = (yy, mm, dd) => `${yy}-${String(mm + 1).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
   const tp = (it.type || "").trim();
-  if (tp === "Aylık") { const d1 = iso(y, m, 1); return d1 >= today ? d1 : iso(m === 11 ? y + 1 : y, (m + 1) % 12, 1); }
-  if (tp === "Haftalık") { const d = new Date(today + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 7); return d.toISOString().slice(0, 10); }
+  if (tp === "Aylık") return iso(y, m, 1);
+  if (tp === "Haftalık") return today;
   const dn = (it.donem || "").trim();
   const names = dn.includes(" - ") ? dn.split(" - ").map(x => x.trim()) : [dn];
   const idx = names.map(n => AY_ADLARI.indexOf(n)).filter(i => i >= 0);
