@@ -411,6 +411,14 @@ async function probeText(env) {
         const val = p => p.lev ? p.qty * (p.price - p.cost) : p.qty * p.price;
         out.push("Aktif: " + (ps.length - closed.length) + " · Kapalı/toz: " + closed.length);
         out.push("Kapalı/toz olanlar: " + (closed.map(p => `${p.t}(${(+p.qty).toFixed(4)}@${p.price}=$${Math.round(val(p))})`).join(", ") || "—"));
+        // P.8: sabah mesajındaki grup %'lerin neden 0.00 çıktığını görmek için son 5 kayıt
+        const hist = Array.isArray(j.keys.history) ? j.keys.history.slice().sort((a, b) => a.date < b.date ? -1 : 1) : [];
+        out.push("Son 5 history kaydı:");
+        hist.slice(-5).forEach(h => {
+          const g = h.groups || {};
+          const gs = Object.keys(g).map(k => k + "=" + Math.round(num(g[k].val))).join(" · ") || "grup yok";
+          out.push(`  ${h.date} · total=${Math.round(num(h.total))} · ${gs} · src=${h.src || "?"}`);
+        });
       } else out.push("KV'den veri okunamadı (boş).");
     } catch (e) { out.push("KV hata: " + errStr(e)); }
   }
@@ -2414,7 +2422,7 @@ async function buildMorning(env, send) {
     haberBasliklari: news.map(n => n.t + ": " + n.h),
     makroSonDegerler: fl.map(x => x.lab + " " + x.v + " (" + x.d + ")")
   }, "daily");
-  if (ai) { L.push(" ____________ "); L.push(""); L.push("*Günlük AI Yorum*"); L.push(ai); }
+  if (ai) { L.push("──────────"); L.push(""); L.push("*Günlük AI Yorum*"); L.push(ai); }
   L.push("");
   L.push("*Bugünün önemli olayları*");
   if (eT.length) L.push("• Earnings: " + eT.join(", "));
@@ -2492,7 +2500,7 @@ async function buildWeeklyMsg(env, send) {
     piyasa: Object.fromEntries(Object.keys(mkt).map(k => [k, mfmt(k, mkt[k])])),
     gelecekHafta: evNext
   }, "weekly");
-  if (ai) { L.push(" ____________ "); L.push(""); L.push("*Haftalık AI Yorum*"); L.push(ai); }
+  if (ai) { L.push("──────────"); L.push(""); L.push("*Haftalık AI Yorum*"); L.push(ai); }
   L.push("");
   L.push("*Haftanın önemli olayları*");
   if (evWeek.length) L.push(...evWeek.slice(0, 8)); else L.push("• Kayıtlı olay yok");
