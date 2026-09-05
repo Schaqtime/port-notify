@@ -587,11 +587,16 @@ async function fetchLivePrices(env, keys) {
   const stocks = [...new Set(positions.filter(p => !p.cg && !p.manual && p.t).map(p => p.t.toUpperCase()))];
   const failSyms = [];
   if (fh) {
-    for (const sym of stocks) {
+    for (let si = 0; si < stocks.length; si++) {
+      const sym = stocks[si];
       try {
         const r = await fetch("https://finnhub.io/api/v1/quote?symbol=" + encodeURIComponent(sym) + "&token=" + encodeURIComponent(fh), { headers: ua() });
         if (r.ok) { const q = await r.json(); if (q && q.c > 0) { setStockPrice(positions, sym, q.c, q.dp); rep.stock++; } else failSyms.push(sym); }
-        else { failSyms.push(sym); if (r.status === 429) { rep.fail.push("finnhub 429 (dakika limiti)"); break; } }
+        else {
+          failSyms.push(sym);
+          // P.8: 429'da kalan semboller hiç denenmeden atlanıyordu — artık hepsi TwelveData yedeğine düşsün diye ekleniyor.
+          if (r.status === 429) { failSyms.push(...stocks.slice(si + 1)); rep.fail.push("finnhub 429 (dakika limiti) — kalan " + (stocks.length - si - 1) + " sembol TwelveData'ya düştü"); break; }
+        }
       } catch (e) { failSyms.push(sym); }
       await sleep(1100); // Finnhub ~60/dk
     }
