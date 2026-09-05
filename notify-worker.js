@@ -556,7 +556,10 @@ function weekPerformers(k) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function ua() { return { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" }; }
 function setStockPrice(positions, sym, price, dp) {
-  positions.forEach(p => { if (!p.cg && p.t && p.t.toUpperCase() === sym.toUpperCase()) { p.price = price; if (dp != null && !isNaN(+dp)) p.day = +(+dp).toFixed(2); } });
+  positions.forEach(p => { if (!p.cg && p.t && p.t.toUpperCase() === sym.toUpperCase()) {
+    p.price = price; if (dp != null && !isNaN(+dp)) p.day = +(+dp).toFixed(2);
+    p.srcAt = Date.now(); p.src = "live";   // P.8: cihazlar arası merge fiyatı bununla ayırt ediyor
+  } });
 }
 async function fetchLivePrices(env, keys) {
   const positions = Array.isArray(keys.positions) ? keys.positions : [];
@@ -575,6 +578,7 @@ async function fetchLivePrices(env, keys) {
           if (p.cg && j[p.cg] && j[p.cg].usd != null) {
             p.price = j[p.cg].usd;
             if (j[p.cg].usd_24h_change != null) p.day = +(+j[p.cg].usd_24h_change).toFixed(2);
+            p.srcAt = Date.now(); p.src = "live";   // P.8: cihazlar arası merge fiyatı bununla ayırt ediyor
             rep.crypto++;
           }
         });
@@ -1793,7 +1797,21 @@ async function writeSnapshot(env) {
   else hist.push(rec);
   hist.sort((a, b) => a.date < b.date ? -1 : 1);
   fk.history = hist.slice(-1500);
-  if (rep && (rep.crypto + rep.stock) > 0) { fk.positions = keys.positions; fk.priceUpd = new Date().toISOString(); }
+  /* P.8: eskiden burada fk.positions = keys.positions ile TÜM pozisyon bütünüyle değiştiriliyordu —
+     yorum "yalnız history'ye dokun" dese de bunu bozuyordu: fetchLivePrices'ın kullandığı `keys`
+     ilk fetchState'ten (fiyat çekimi ~20 sn sürebiliyor), ikinci "fresh" okuma arada başka bir
+     cihazın yaptığı düzenlemeyi (miktar/maliyet/not) yakalasa bile ilk okumanın ESKİ kopyasıyla
+     eziliyordu. Artık yalnız fiyat/gün%/kaynak alanları sembol bazında `fresh` üstüne bindiriliyor,
+     aradaki düzenlemeler korunuyor. */
+  if (rep && (rep.crypto + rep.stock) > 0) {
+    const bySym = {};
+    (keys.positions || []).forEach(p => { if (p && p.t) bySym[p.t] = p; });
+    (fk.positions || []).forEach(p => {
+      const src = p && p.t && bySym[p.t];
+      if (src && src.srcAt) { p.price = src.price; p.day = src.day; p.srcAt = src.srcAt; p.src = src.src; }
+    });
+    fk.priceUpd = new Date().toISOString();
+  }
   const where = await saveState(env, fresh);
   return `${date} · toplam ${usd(rec.total)} · ${hist.length} kayıt · ${where}` + (rep ? ` · fiyat ${rep.crypto + rep.stock}` : "");
 }
