@@ -1481,10 +1481,12 @@ async function paymentReminders(env, keys, today, alerted, push){
     (buckets[bk]=buckets[bk]||{date:r.date,diff,sum:0,items:[]});
     buckets[bk].sum+=amt; buckets[bk].items.push(((r.bank||"")+" "+(r.product||"")).trim());
   }
-  /* abonelikler / hobi / faturalar — V-9.9: finSub de dahil */
+  /* abonelikler / hobi / faturalar — V-9.9: finSub de dahil.
+     P.9: sabit it.next yerine subNextDue() — "next" boşsa (Aylık/Haftalık/donem) hiç
+     hesaplanmıyor, abonelik push bildiriminde hep sessizce atlanıyordu. hold da eklendi. */
   for(const it of (Array.isArray(keys.finSub)?keys.finSub:[])){
-    if(!it||it.paid)continue;
-    const ds=it.next||""; if(!ds)continue;
+    if(!it||it.paid||it.hold)continue;
+    const ds=subNextDue(it,today); if(!ds)continue;
     const diff=dayDiff(ds); if(diff!==0&&diff!==3)continue;
     const amt=+it.tl||0;
     const bk=ds+"|"+diff;
