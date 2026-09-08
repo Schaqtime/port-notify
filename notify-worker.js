@@ -2224,14 +2224,22 @@ function nearTargets(keys, pctBand) {
   out.sort((a, b) => Math.abs(a.gap) - Math.abs(b.gap));
   return out.slice(0, 6);
 }
-/* ---------- V-11.1 (#7): bütçesi aşılmış gruplar (piyasa değeri > bütçe) ---------- */
+/* ---------- V-11.1 (#7): bütçesi aşılmış gruplar (YATIRILAN sermaye > bütçe) ----------
+   P.9: piyasa değeriyle (canlı fiyat × adet) karşılaştırıyordu — hisse fiyatı artınca
+   yatırılan para hiç değişmediği halde "bütçe aşıldı" bildirimi geliyordu. Uygulamadaki
+   cost(p) ile aynı kural: kaldıraçlı pozisyonlar sermaye sayılmaz. */
+function groupInvestedLive(keys, g, term) {
+  const ps = (keys.positions || []).filter(p => p && num(p.qty) > 1e-6 && groupOf(p) === g && (!term || termOf(p) === term));
+  if (!ps.length) return null;
+  return ps.reduce((a, p) => a + (p.lev ? 0 : num(p.qty) * num(p.cost)), 0);
+}
 function budgetOver(keys) {
   const B = keys.budgets || (keys.settings && keys.settings.budgets) || {};   // uygulama keys.budgets olarak yolluyor
   const out = [];
   Object.keys(B).forEach(g => {
     const bud = num(B[g]);
     if (!(bud > 0)) return;
-    const v = groupValLive(keys, g);
+    const v = groupInvestedLive(keys, g);
     if (v == null || !(v > bud)) return;
     out.push({ g, v, bud, pct: (v - bud) / bud * 100 });
   });
