@@ -587,7 +587,13 @@ async function fetchLivePrices(env, keys) {
   }
 
   // 2) Hisse — Finnhub (tek tek), Twelvedata yedek
-  const fh = (env.FINNHUB || "").trim();
+  /* madde: burada yalnız env.FINNHUB/env.TWELVEDATA (worker secret'i) okunuyordu —
+     kullanıcının Ayarlar'dan girdiği kendi anahtarı (keys.apiKeys, marketRefs'in zaten
+     kullandığı apiKeyOf ile) hiç devreye girmiyordu. Worker'da secret set edilmemişse
+     hisse fiyatları HİÇ güncellenmiyordu (gece kaydı bir önceki günden aynen kopyalanıyor,
+     bu da strateji bazında sürekli %0,00 görünmesine yol açıyordu) — kullanıcının kendi
+     anahtarı geçerliyken bile. Artık apiKeyOf ile aynı sıra (env → keys.apiKeys) izleniyor. */
+  const fh = apiKeyOf(env, keys, "finnhub");
   const stocks = [...new Set(positions.filter(p => !p.cg && !p.manual && p.t).map(p => p.t.toUpperCase()))];
   const failSyms = [];
   if (fh) {
@@ -604,9 +610,9 @@ async function fetchLivePrices(env, keys) {
       } catch (e) { failSyms.push(sym); }
       await sleep(1100); // Finnhub ~60/dk
     }
-  } else { failSyms.push(...stocks); rep.fail.push("FINNHUB secret yok → hisse fiyatı son sync'ten"); }
+  } else { failSyms.push(...stocks); rep.fail.push("Finnhub anahtarı yok (ne worker secret'i ne Ayarlar'daki) → hisse fiyatı son sync'ten"); }
 
-  const td = (env.TWELVEDATA || "").trim();
+  const td = apiKeyOf(env, keys, "twelvedata");
   if (td && failSyms.length) {
     try {
       const syms = [...new Set(failSyms)].filter(Boolean);
