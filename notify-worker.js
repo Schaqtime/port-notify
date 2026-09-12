@@ -1,5 +1,5 @@
 /* ============================================================
-   PORT · BİLDİRİM WORKER  ·  V-13.2 (cron iz kaydı /runlog · pay penceresi 1 saat · damga iş bitince)
+   Terminal · BİLDİRİM WORKER  ·  V-13.2 (cron iz kaydı /runlog · pay penceresi 1 saat · damga iş bitince)
    ------------------------------------------------------------
    Veriyi DOĞRUDAN KV'den okur (worker-to-worker HTTP yok).
    "port" (uygulama) ve "portfolio-sync" worker'larına DOKUNMAZ.
@@ -173,7 +173,7 @@ export default {
       try {
         if (url.pathname === "/subscribe") { const sub = await request.json(); await pushSubStore(env, sub); return txt("OK · abone kaydedildi"); }
         if (url.pathname === "/unsubscribe") { const b = await request.json().catch(()=>({})); await pushSubRemove(env, b.endpoint); return txt("OK · abonelik silindi"); }
-        if (url.pathname === "/pushtest") { const n = await sendPushAll(env, { title: "PORT · Test", body: "Push çalışıyor ✅", tag: "test", url: "/" }); return txt("OK · " + n + " cihaza gönderildi"); }
+        if (url.pathname === "/pushtest") { const n = await sendPushAll(env, { title: "Terminal · Test", body: "Push çalışıyor ✅", tag: "test", url: "/" }); return txt("OK · " + n + " cihaza gönderildi"); }
         if (url.pathname === "/pushcheck") { const r = await runPushChecks(env); return txt("PUSH CHECK ·\n" + r); }
         if (url.pathname === "/mailtest") { const r = await weeklyMail(env); return txt("MAIL · " + r); }
       } catch (e) { return txt("HATA [" + url.pathname.slice(1).toUpperCase() + "]: " + errStr(e), 500); }
@@ -520,7 +520,7 @@ function sg(n, d = 2) { return (n >= 0 ? "+" : "") + n.toFixed(d); }
 function trTime(iso) { try { const d = iso ? new Date(iso) : new Date(); return d.toLocaleString("tr-TR", { timeZone: "Europe/Istanbul", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch (e) { return "—"; } }
 function moversLine(a) { return a.map(p => `${p.t} ${sg(num(p.day), 1)}%`).join(" · ") || "—"; }
 function buildDaily(s, state) {
-  return ["📊 *PORT · Günlük Özet*", `Toplam: *${usd(s.grand)}*`,
+  return ["📊 *Terminal · Günlük Özet*", `Toplam: *${usd(s.grand)}*`,
     `Bugün: ${usd(s.todayPL)} (${sg(s.todayPLp)}%)`,
     `Toplam K/Z: ${usd(s.totalPL)} (${sg(s.totalPLp)}%)`,
     (s.lb7 ? `7g: ${usd(s.lb7.abs)} (${sg(s.lb7.pct)}%)` : ""), "",
@@ -529,7 +529,7 @@ function buildDaily(s, state) {
   ].filter(x => x !== "").join("\n");
 }
 function buildWeekly(s, keys, state) {
-  const perf = weekPerformers(keys); const L = ["🗓️ *PORT · Haftalık Özet*", `Toplam: *${usd(s.grand)}*`];
+  const perf = weekPerformers(keys); const L = ["🗓️ *Terminal · Haftalık Özet*", `Toplam: *${usd(s.grand)}*`];
   if (s.lb7) L.push(`Bu hafta: ${usd(s.lb7.abs)} (${sg(s.lb7.pct)}%)`);
   if (s.lb30) L.push(`30g: ${usd(s.lb30.abs)} (${sg(s.lb30.pct)}%)`);
   L.push(`Toplam K/Z: ${usd(s.totalPL)} (${sg(s.totalPLp)}%)`);
@@ -1609,15 +1609,15 @@ async function weeklyMail(env){
   const flat={positions:k.positions||[],watch:k.watch||[],tx:k.tx||{},history:k.history||[],
               settings:k.settings||{},exportedAt:new Date().toISOString()};
   const b64imp=btoa(unescape(encodeURIComponent(JSON.stringify(flat,null,2))));
-  const from=env.MAIL_FROM || "PORT <onboarding@resend.dev>";
+  const from=env.MAIL_FROM || "Terminal <onboarding@resend.dev>";
   const body={
     from, to:["sakir.unveren@gmail.com"],
-    subject:"PORT · Haftalık yedek ("+d+")",
-    text:"PORT portföy JSON yedeği ektedir. Tarih: "+d+"\nAnahtar sayısı: "+(state&&state.keys?Object.keys(state.keys).length:0)+
-         "\n\nİki ek var:\n· port-…json — bulut/sync ham yedeği (dışa aktar)\n· port-import-…json — uygulamada \"İçe aktar (JSON)\" ile geri yüklenir",
+    subject:"Terminal · Haftalık yedek ("+d+")",
+    text:"Terminal portföy JSON yedeği ektedir. Tarih: "+d+"\nAnahtar sayısı: "+(state&&state.keys?Object.keys(state.keys).length:0)+
+         "\n\nİki ek var:\n· terminal-…json — bulut/sync ham yedeği (dışa aktar)\n· terminal-import-…json — uygulamada \"İçe aktar (JSON)\" ile geri yüklenir",
     attachments:[
-      { filename:"port-"+d.replace(/\./g,"-")+".json", content:b64 },
-      { filename:"port-import-"+d.replace(/\./g,"-")+".json", content:b64imp }
+      { filename:"terminal-"+d.replace(/\./g,"-")+".json", content:b64 },
+      { filename:"terminal-import-"+d.replace(/\./g,"-")+".json", content:b64imp }
     ]
   };
   const r=await fetch("https://api.resend.com/emails",{
@@ -2001,7 +2001,7 @@ async function fredLatest(env, keys, budget) {
 const INSIDER_BATCH = 4;          // çağrı başına sembol (50 subrequest sınırı)
 const INSIDER_MAXDOC = 14;        // çağrı başına indirilecek en fazla Form 4 belgesi
 /* SEC User-Agent zorunlu. env.SEC_UA ile değiştirilebilir (SEC "Ad e-posta" biçimi ister). */
-function secUA(env) { return { "User-Agent": (env && env.SEC_UA) || "PORT App port-app@users.noreply.github.com", "Accept-Encoding": "gzip" }; }
+function secUA(env) { return { "User-Agent": (env && env.SEC_UA) || "Terminal App port-app@users.noreply.github.com", "Accept-Encoding": "gzip" }; }
 function insiderUniverse(keys) {
   const closed = p => (+p.qty || 0) <= 1e-6;
   const a = (keys.positions || []).filter(p => p && !p.manual && !p.cg && !closed(p));
