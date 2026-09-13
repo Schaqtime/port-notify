@@ -2547,9 +2547,6 @@ async function buildWeeklyMsg(env, send) {
   }, "weekly");
   if (ai) { L.push("──────────"); L.push(""); L.push("*Haftalık AI Yorum*"); L.push(ai); }
   L.push("");
-  L.push("*Haftanın önemli olayları*");
-  if (evWeek.length) L.push(...evWeek.slice(0, 8)); else L.push("• Kayıtlı olay yok");
-  L.push("");
   L.push("*Gelecek haftanın önemli olayları*");
   if (evNext.length) L.push(...evNext.slice(0, 10)); else L.push("• Takvimde kayıtlı önemli olay yok");
   const text = L.join("\n");
