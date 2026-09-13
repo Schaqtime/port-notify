@@ -2271,12 +2271,12 @@ async function aiParagraph(env, keys, facts, kind) {
   const system = "Türkçe yaz. Sana JSON içinde verilmeyen hiçbir bilgiyi (haber, sebep, olay) UYDURMA — emin olmadığın ya da veri yetersizse o kısmı atla ya da kısa geç; boş/kısa kalması uydurmaktan iyidir. Metninde RAKAM/SAYI/YÜZDE YAZMA — sayılar mesajın üst kısmında zaten var; sen yalnızca verilen sayılardan çıkardığın NİTEL yorumu yaz ('geniş tabanlı bir gerileme', 'birkaç isme bağlı sınırlı bir yükseliş', 'son bir aylık eğilimin tersine döndü' gibi). Sembol adları yazılabilir. Yatırım tavsiyesi verme. Süslü başlık, madde işareti, markdown kullanma — düz metin, en fazla 4 kısa cümle.";
   /* V-11.0: zaman kayması düzeltmesi — performans verisi DÜNÜN kapanışına ait, bugüne dair
      yalnız takvim (earnings/makro) bilgisi var. Etiketler facts içinde de tarihli veriliyor.
-     V-11.1: weekly'ye genislik (kaç ürün pozitif/negatif) ve sonOtuzGun (aylık eğilim) eklendi —
-     model artık sadece "şu yükseldi şu düştü" demek yerine hareketin geniş mi dar mı, aylık
-     eğilimle tutarlı mı tersi mi olduğunu (hâlâ yalnız verilen sayılardan) yorumlayabiliyor. */
+     V-11.1: hem weekly hem daily'ye genislik (kaç ürün pozitif/negatif) ve sonOtuzGun (aylık
+     eğilim) eklendi — model artık sadece "şu yükseldi şu düştü" demek yerine hareketin geniş mi
+     dar mı, aylık eğilimle tutarlı mı tersi mi olduğunu (hâlâ yalnız verilen sayılardan) yorumluyor. */
   const user = (kind === "weekly"
     ? "Aşağıdaki gerçek verilerle 4 cümlede özetle. ZAMAN KURALI: performans verileri (haftaPct, gruplar, kazananlar/kaybedenler, piyasa, genislik, sonOtuzGun) GEÇEN HAFTAYA aittir — bunları 'bu hafta' diye anlatma. 'gelecekHafta' yalnız takvimdir, henüz gerçekleşmedi; onun için tahmin/sonuç yazma, sadece takip edilecek başlık olarak an. Yalnızca bu JSON'daki alanları kullan, dışarıdan bilgi ekleme. Sıra: geçen hafta portföyde ne oldu ve bunun (genislik ile sonOtuzGun'a göre) geniş tabanlı mı yoksa birkaç isme mi bağlı olduğu, son bir aylık eğilimle tutarlı mı yoksa tersi mi olduğu, hangi grup öne çıktı, gelecek hafta nelere dikkat edilmeli.\n"
-    : "Aşağıdaki gerçek verilerle 3 cümlede özetle. ZAMAN KURALI: performans verileri (dunKapanisPct, gruplar, dunKazananlar, dunKaybedenler, piyasa) DÜNÜN kapanışına aittir — bunları 'bugün' diye anlatma, 'dün' de. Bugüne dair elimizde yalnız takvim var (bugunEarnings/bugunMakro); bugünün piyasası henüz açılmadı, bugün için sonuç/yön yazma, sadece takip edilecek başlık olarak an. Sıra: dün portföyde ne oldu, bugün nelere dikkat edilmeli.\n") + JSON.stringify(facts);
+    : "Aşağıdaki gerçek verilerle 4 cümlede özetle. ZAMAN KURALI: performans verileri (dunKapanisPct, gruplar, dunKazananlar, dunKaybedenler, piyasa, genislik, sonOtuzGun) DÜNÜN kapanışına aittir — bunları 'bugün' diye anlatma, 'dün' de. Bugüne dair elimizde yalnız takvim var (bugunEarnings/bugunMakro); bugünün piyasası henüz açılmadı, bugün için sonuç/yön yazma, sadece takip edilecek başlık olarak an. Yalnızca bu JSON'daki alanları kullan, dışarıdan bilgi ekleme. Sıra: dün portföyde ne oldu ve bunun (genislik ile sonOtuzGun'a göre) geniş tabanlı mı yoksa birkaç isme mi bağlı olduğu, son bir aylık eğilimle tutarlı mı yoksa tersi mi olduğu, bugün nelere dikkat edilmeli.\n") + JSON.stringify(facts);
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -2462,6 +2462,8 @@ async function buildMorning(env, send) {
     gruplar: { Stock: gp("Stock"), Commodity: gp("Commodity"), Crypto: gp("Crypto"), Trade: gp("Trade") },
     dunKazananlar: (s.gainers || []).map(p => p.t + " " + sg(num(p.day), 1) + "%"),
     dunKaybedenler: (s.losers || []).map(p => p.t + " " + sg(num(p.day), 1) + "%"),
+    genislik: { pozitifSayisi: pos, negatifSayisi: neg, toplamUrun: openPos.length },
+    sonOtuzGun: s.lb30 ? sg(s.lb30.pct, 2) + "%" : null,
     piyasa: Object.fromEntries(Object.keys(mkt).map(k => [k, mfmt(k, mkt[k])])),
     bugunEarnings: eT, yarinEarnings: eY, bugunMakro: mT, yarinMakro: mY,
     targetYakini: nt.map(x => x.t + " " + sg(x.gap, 1) + "%"),
