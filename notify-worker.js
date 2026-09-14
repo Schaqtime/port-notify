@@ -1544,6 +1544,7 @@ async function buildPayMsg(env, send) {
   const today = trShift(0);
   const t0 = new Date(today + "T00:00:00Z").getTime();
   const dayDiff = ds => { const d = new Date((ds + "").slice(0, 10) + "T00:00:00Z").getTime(); return isNaN(d) ? null : Math.round((d - t0) / 86400000); };
+  const tl = v => Math.round(v).toLocaleString("tr-TR") + "₺";
   const buckets = {};
   const add = (ds, diff, name, amt) => {
     const b = (buckets[ds] = buckets[ds] || { diff, sum: 0, items: [] });
@@ -1563,12 +1564,37 @@ async function buildPayMsg(env, send) {
     add(due, diff, it.name || it.cat || "abonelik", +it.tl || 0);
   }
   const dates = Object.keys(buckets).sort();
-  if (!dates.length) {                                  // teşhis: veri mi yok, vade mi uzak?
-    const np = (Array.isArray(keys.finPay) ? keys.finPay : []).filter(r => r && r.date && !r.paid && (r.date + "").slice(0, 10) >= today).map(r => (r.date + "").slice(0, 10)).sort()[0];
-    const ns = (Array.isArray(keys.finSub) ? keys.finSub : []).filter(x => x && !x.paid).map(x => subNextDue(x, today)).filter(x => x && x >= today).sort()[0];
-    return `ödeme yok · finPay ${(keys.finPay || []).length} kayıt (en yakın ${np || "—"}) · finSub ${(keys.finSub || []).length} kayıt (en yakın ${ns || "—"})`;
+  if (!dates.length) {
+    /* V-11.6: 3 gün içinde ödeme yoksa artık tamamen sessiz kalmak yerine, varsa en yakın
+       (3 günün ötesindeki) ödemeyi "bilgi amaçlı" tek satır olarak gönderiyor — aynı gün
+       tekrar tekrar göndermesin diye pay:lastSig ile diğer mesajlarla aynı imza kaydını kullanır. */
+    const npRec = (Array.isArray(keys.finPay) ? keys.finPay : [])
+      .filter(r => r && r.date && !r.paid && +r.amt > 0 && (r.date + "").slice(0, 10) >= today)
+      .sort((a, b) => (a.date + "").localeCompare(b.date + ""))[0];
+    const nsCands = (Array.isArray(keys.finSub) ? keys.finSub : [])
+      .filter(x => x && !x.paid && !x.hold)
+      .map(x => ({ x, due: subNextDue(x, today) }))
+      .filter(o => o.due && o.due >= today)
+      .sort((a, b) => a.due.localeCompare(b.due));
+    const npDate = npRec ? (npRec.date + "").slice(0, 10) : null;
+    const nsDate = nsCands[0] ? nsCands[0].due : null;
+    let nearest = null;
+    if (npDate && (!nsDate || npDate <= nsDate)) nearest = { date: npDate, name: ((npRec.bank || "") + " " + (npRec.product || "")).trim() || "taksit", amt: +npRec.amt || 0 };
+    else if (nsDate) nearest = { date: nsDate, name: nsCands[0].x.name || nsCands[0].x.cat || "abonelik", amt: +nsCands[0].x.tl || 0 };
+    const text = nearest
+      ? `Ödeme Hatırlatma 💳\nYakın vadede (3 gün içinde) ödemen yok.\nEn yakın: ${nearest.date.slice(8)}.${nearest.date.slice(5, 7)} · ${nearest.name}${nearest.amt > 0 ? " · " + tl(nearest.amt) : ""}`
+      : `Ödeme Hatırlatma 💳\nKayıtlı bekleyen ödeme/abonelik yok.`;
+    if (send) {
+      let sig = 0; for (let i = 0; i < text.length; i++) sig = (sig * 31 + text.charCodeAt(i)) | 0; sig = String(sig);
+      let last = null;
+      try { last = await env.PORTFOLIO.get("pay:lastSig"); } catch (e) {}
+      if (last !== sig) {
+        await sendWA(env, text);
+        try { await env.PORTFOLIO.put("pay:lastSig", sig, { expirationTtl: 2592000 }); } catch (e) {}
+      }
+    }
+    return text;
   }
-  const tl = v => Math.round(v).toLocaleString("tr-TR") + "₺";
   const L = ["Ödeme Hatırlatma 💳", `${today.slice(8)}.${today.slice(5, 7)}.${today.slice(0, 4)} · bugün ve 3 gün`, ""];
   let toplam = 0;
   for (const ds of dates) {
