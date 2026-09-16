@@ -1631,13 +1631,15 @@ async function weeklyMail(env,send){
   const json=JSON.stringify(state,null,2);
   const b64=btoa(unescape(encodeURIComponent(json)));
   const d=new Date().toLocaleDateString("tr-TR",{timeZone:"Europe/Istanbul"});
-  // Uygulamanın "İçe aktar (JSON)" düğmesinin beklediği düz biçim — V-1.58: uygulama artık SYNC_KEYS'teki
-  // HER ŞEYİ (nakit bakiyeleri, notlar, borsa listesi, vb. dahil) yedekleyip geri yüklüyor; mail eki de
-  // aynı listeyi taşımalı, yoksa mailden restore ettiğinizde uygulamanın export'undan eksik kalır.
+  // Uygulamanın "İçe aktar (JSON)" düğmesinin beklediği düz biçim — V-1.59: bu liste Terminal'deki
+  // SYNC_KEYS ile BİREBİR aynı tutulmalı (settings hariç, o ayrıca taşınır). Daha önce theme/wstate/
+  // wClosedTerm/collapsed/ledgerCols burada yoktu (kozmetik ama tam yedek iddiası için eksikti); ayrıca
+  // "settings" (startCap/budgets/anchors dahil) uygulama tarafında hiç buluta gitmiyordu — o da düzeltildi,
+  // bu yüzden k.settings artık gerçekten dolu gelecek (önceki senkronlardan kalma boş kopyalar hariç).
   const k=(state&&state.keys)||{};
   const BACKUP_KEYS=["positions","watch","tx","history","notes","priceUpd","closed","closedTerm","gstate",
     "exchCash","exchOpen","exchList","channels","watchedVideos","twAccounts","tgChannels","videos",
-    "finPay","finSub","finAlloc","finOver","finMon"];
+    "finPay","finSub","finAlloc","finOver","finMon","theme","wstate","wClosedTerm","collapsed","ledgerCols"];
   const flat={settings:k.settings||{},exportedAt:new Date().toISOString()};
   BACKUP_KEYS.forEach(key=>{flat[key]=k[key];});
   const b64imp=btoa(unescape(encodeURIComponent(JSON.stringify(flat,null,2))));
