@@ -52,7 +52,7 @@ export default {
        Uygulama buraya sorar, worker FRED'i çağırıp CORS başlığıyla döner.
        Anahtar KV'deki senkron durumundan (apiKeys.fred) okunur; URL'de anahtar taşınmaz. */
     /* V-9.9: elle tetikleme uçları — /snapshot, /earnings, /morning, /weekly (hepsi key korumalı) */
-    if (url.pathname === "/snapshot" || url.pathname === "/earnings" || url.pathname === "/morning" || url.pathname === "/weekly" || url.pathname === "/pay" || url.pathname === "/dispatch" || url.pathname === "/runlog") {
+    if (url.pathname === "/snapshot" || url.pathname === "/earnings" || url.pathname === "/morning" || url.pathname === "/weekly" || url.pathname === "/pay" || url.pathname === "/dispatch" || url.pathname === "/runlog" || url.pathname === "/mailbackup") {
       const k = url.searchParams.get("key") || "";
       const exp = env.TEST_KEY || env.SYNC_PW || "";
       if (!exp || k !== exp) return txt("unauthorized", 401);
@@ -68,6 +68,13 @@ export default {
            Hepsini birden zorlamak Cloudflare'in çağrı başına 50 subrequest sınırını aşıyordu. */
         if (url.pathname === "/dispatch") return txt("DISPATCH · " + await dispatch(env, url.searchParams.get("job") || "", dry));
         if (url.pathname === "/runlog")   return txt("RUNLOG\n" + await runLogDump(env, +(url.searchParams.get("days") || 3)));
+        /* V-1.1: uygulamadaki "Buluttan geri yükle" butonu — en son haftalık mail yedeğinin
+           (weeklyMail'in KV'ye yazdığı dondurulmuş kopyanın) aynısını JSON olarak döner. */
+        if (url.pathname === "/mailbackup") {
+          const raw = env.PORTFOLIO ? await env.PORTFOLIO.get("mailbackup") : null;
+          if (!raw) return txt(JSON.stringify({ error: "Henüz kaydedilmiş mail yedeği yok" }), 404, "application/json");
+          return txt(raw, 200, "application/json");
+        }
       } catch (e) { return txt("HATA [" + url.pathname.slice(1).toUpperCase() + "]: " + errStr(e), 500); }
     }
     /* V-11.2 (#9): MAKRO TAKVİM — uygulama içi görünüm için FRED yayın takvimi (gerçek veri).
@@ -1662,6 +1669,10 @@ async function weeklyMail(env,send){
   });
   const t=await r.text();
   if(!r.ok) throw new Error("Resend "+r.status+": "+t.slice(0,200));
+  // V-1.1: mail gönderilen ANLIK yedek, uygulamadaki "Buluttan geri yükle" butonu için KV'ye de
+  // yazılıyor — böylece kullanıcı Gmail'e girip eki indirip elle içe aktarmadan, tek tıkla bu
+  // dondurulmuş (Cuma'daki) kopyayı geri yükleyebiliyor.
+  try{ if(env.PORTFOLIO) await env.PORTFOLIO.put("mailbackup", JSON.stringify({savedAt:new Date().toISOString(), flat})); }catch(e){}
   return "gönderildi ("+d+")";
 }
 
