@@ -1631,12 +1631,15 @@ async function weeklyMail(env,send){
   const json=JSON.stringify(state,null,2);
   const b64=btoa(unescape(encodeURIComponent(json)));
   const d=new Date().toLocaleDateString("tr-TR",{timeZone:"Europe/Istanbul"});
-  // Uygulamanın "İçe aktar (JSON)" düğmesinin beklediği düz biçim — V-1.57: finAlloc/finOver/finMon
-  // (Allocation/Overall/Monthly) artık uygulamanın kendi export'una da dahil, mail yedeği de aynısını taşır.
+  // Uygulamanın "İçe aktar (JSON)" düğmesinin beklediği düz biçim — V-1.58: uygulama artık SYNC_KEYS'teki
+  // HER ŞEYİ (nakit bakiyeleri, notlar, borsa listesi, vb. dahil) yedekleyip geri yüklüyor; mail eki de
+  // aynı listeyi taşımalı, yoksa mailden restore ettiğinizde uygulamanın export'undan eksik kalır.
   const k=(state&&state.keys)||{};
-  const flat={positions:k.positions||[],watch:k.watch||[],tx:k.tx||{},history:k.history||[],
-              settings:k.settings||{},finAlloc:k.finAlloc||[],finOver:k.finOver||[],finMon:k.finMon||[],
-              finPay:k.finPay||[],finSub:k.finSub||[],exportedAt:new Date().toISOString()};
+  const BACKUP_KEYS=["positions","watch","tx","history","notes","priceUpd","closed","closedTerm","gstate",
+    "exchCash","exchOpen","exchList","channels","watchedVideos","twAccounts","tgChannels","videos",
+    "finPay","finSub","finAlloc","finOver","finMon"];
+  const flat={settings:k.settings||{},exportedAt:new Date().toISOString()};
+  BACKUP_KEYS.forEach(key=>{flat[key]=k[key];});
   const b64imp=btoa(unescape(encodeURIComponent(JSON.stringify(flat,null,2))));
   const from=env.MAIL_FROM || "Terminal <onboarding@resend.dev>";
   const body={
