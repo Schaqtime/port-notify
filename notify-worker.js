@@ -31,6 +31,7 @@ export default {
        06:00     : bilanço (earnings) tarihlerini tazele
        07:30     : sabah WhatsApp özeti (yalnız Pzt–Cum)
        19:00 Paz : haftalık WhatsApp özeti
+       20:00 Cum : haftalık JSON yedek maili (Resend) — Terminal'deki tüm state'in yedeği
      Eski cron'lar (0 16 * * *, 0 16 * * SUN) dursa da zararsız; dağıtıcı yine saate bakar. */
   async scheduled(event, env, ctx) {
     ctx.waitUntil(dispatch(env).catch(()=>{}));
@@ -175,7 +176,7 @@ export default {
         if (url.pathname === "/unsubscribe") { const b = await request.json().catch(()=>({})); await pushSubRemove(env, b.endpoint); return txt("OK · abonelik silindi"); }
         if (url.pathname === "/pushtest") { const n = await sendPushAll(env, { title: "Terminal · Test", body: "Push çalışıyor ✅", tag: "test", url: "/" }); return txt("OK · " + n + " cihaza gönderildi"); }
         if (url.pathname === "/pushcheck") { const r = await runPushChecks(env); return txt("PUSH CHECK ·\n" + r); }
-        if (url.pathname === "/mailtest") { const r = await weeklyMail(env); return txt("MAIL · " + r); }
+        if (url.pathname === "/mailtest") { const r = await weeklyMail(env, true); return txt("MAIL · " + r); }
       } catch (e) { return txt("HATA [" + url.pathname.slice(1).toUpperCase() + "]: " + errStr(e), 500); }
     }
     const test = url.searchParams.get("test");
@@ -1624,16 +1625,18 @@ async function buildPayMsg(env, send) {
   }
   return text;
 }
-async function weeklyMail(env){
+async function weeklyMail(env,send){
   if(!env.RESEND_KEY) return "RESEND_KEY yok — mail atlandı";
   const state=await fetchState(env);
   const json=JSON.stringify(state,null,2);
   const b64=btoa(unescape(encodeURIComponent(json)));
   const d=new Date().toLocaleDateString("tr-TR",{timeZone:"Europe/Istanbul"});
-  // Uygulamanın "İçe aktar (JSON)" düğmesinin beklediği düz biçim
+  // Uygulamanın "İçe aktar (JSON)" düğmesinin beklediği düz biçim — V-1.57: finAlloc/finOver/finMon
+  // (Allocation/Overall/Monthly) artık uygulamanın kendi export'una da dahil, mail yedeği de aynısını taşır.
   const k=(state&&state.keys)||{};
   const flat={positions:k.positions||[],watch:k.watch||[],tx:k.tx||{},history:k.history||[],
-              settings:k.settings||{},exportedAt:new Date().toISOString()};
+              settings:k.settings||{},finAlloc:k.finAlloc||[],finOver:k.finOver||[],finMon:k.finMon||[],
+              finPay:k.finPay||[],finSub:k.finSub||[],exportedAt:new Date().toISOString()};
   const b64imp=btoa(unescape(encodeURIComponent(JSON.stringify(flat,null,2))));
   const from=env.MAIL_FROM || "Terminal <onboarding@resend.dev>";
   const body={
@@ -1646,6 +1649,7 @@ async function weeklyMail(env){
       { filename:"terminal-import-"+d.replace(/\./g,"-")+".json", content:b64imp }
     ]
   };
+  if(!send) return "dry-run ok — gönderilmedi ("+d+", "+Object.keys(k).length+" anahtar)";
   const r=await fetch("https://api.resend.com/emails",{
     method:"POST",
     headers:{ "Authorization":"Bearer "+env.RESEND_KEY, "Content-Type":"application/json" },
@@ -1733,6 +1737,7 @@ async function dispatch(env, job, dry) {
   if (want("morning") || (!one && t.hh === 7 && t.mm >= 30 && t.dow >= 1 && t.dow <= 5)) jobs.push(["morning", () => buildMorning(env, send)]);
   if (want("weekly") || (!one && t.hh === 19 && t.dow === 0)) jobs.push(["weekly", () => buildWeeklyMsg(env, send)]);
   if (want("pay") || (!one && t.hh === 9)) jobs.push(["pay", () => buildPayMsg(env, send)]);   // V-13.2: pencere 09:00-09:59 (cron gecikince 15 dk'lık pencere kaçıyordu; günde bir kez garantisini "ran:" damgası veriyor)
+  if (want("mail") || (!one && t.hh === 20 && t.dow === 5)) jobs.push(["mail", () => weeklyMail(env, send)]);   // V-1.1: haftalık JSON yedeği maili — önceden yalnız /mailtest ile elle tetikleniyordu, cron'a hiç bağlanmamıştı
   if (one && !jobs.length && one !== "push") log.push("bilinmeyen job: " + one);
   for (const [name, fn] of jobs) {
     if (cron && await ranToday(env, name, t.date)) { log.push(name + ":atlandı"); continue; }
