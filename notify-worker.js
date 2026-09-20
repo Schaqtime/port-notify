@@ -58,8 +58,8 @@ export default {
       if (!exp || k !== exp) return txt("unauthorized", 401);
       const dry = url.searchParams.get("dry") === "1";
       try {
-        if (url.pathname === "/snapshot") return txt("SNAPSHOT · " + await writeSnapshot(env));
-        if (url.pathname === "/earnings") return txt("EARNINGS · " + await refreshEarnings(env));
+        if (url.pathname === "/snapshot") return txt("SNAPSHOT · " + await writeSnapshot(env, dry));
+        if (url.pathname === "/earnings") return txt("EARNINGS · " + await refreshEarnings(env, dry));
         if (url.pathname === "/morning")  return txt(await buildMorning(env, !dry));
         if (url.pathname === "/weekly")   return txt(await buildWeeklyMsg(env, !dry));
         if (url.pathname === "/pay")      return txt(await buildPayMsg(env, !dry));
@@ -456,12 +456,11 @@ async function run(env, kind, send) {
 }
 
 async function pickKV(env) {
-  let raw = await env.PORTFOLIO.get("state");
-  if (!raw) {
-    const l = await env.PORTFOLIO.list();
-    if (l.keys && l.keys.length) raw = await env.PORTFOLIO.get(l.keys[0].name);
-  }
-  return raw;
+  // V-1.72: "state" yoksa list()'in alfabetik ilk anahtarını okuyan eski yedek kaldırıldı —
+  // aynı KV namespace'inde mailbackup/mkt:refs/push:subs gibi başka anahtarlar da var ve
+  // bunlar "state"ten önce sıralanıyor; state gerçekten yoksa aşağıdaki fetchState zaten
+  // net bir hata veriyor, rastgele başka bir anahtarı okumak/ezmek yerine bu daha güvenli.
+  return await env.PORTFOLIO.get("state");
 }
 
 async function fetchState(env) {
@@ -1716,7 +1715,7 @@ async function runLogAdd(env, key, line, keep) {
 /* V-13.2: /runlog — son günlerin cron koşumları ve iş sonuçları (teşhis). */
 async function runLogDump(env, days) {
   const d = Math.max(1, Math.min(7, days || 3));
-  const tasks = ["push", "snapshot", "earnings", "morning", "weekly", "pay"];
+  const tasks = ["push", "snapshot", "earnings", "morning", "weekly", "pay", "mail"];
   const out = [];
   for (let i = 0; i < d; i++) {
     const date = trShift(-i);
@@ -1748,8 +1747,8 @@ async function dispatch(env, job, dry) {
   }
   const jobs = [];
   const want = n => one ? one === n : false;
-  if (want("snapshot") || (!one && t.hh === 0)) jobs.push(["snapshot", () => writeSnapshot(env)]);
-  if (want("earnings") || (!one && t.hh === 6)) jobs.push(["earnings", () => refreshEarnings(env)]);
+  if (want("snapshot") || (!one && t.hh === 0)) jobs.push(["snapshot", () => writeSnapshot(env, dry)]);
+  if (want("earnings") || (!one && t.hh === 6)) jobs.push(["earnings", () => refreshEarnings(env, dry)]);
   if (want("morning") || (!one && t.hh === 7 && t.mm >= 30 && t.dow >= 1 && t.dow <= 5)) jobs.push(["morning", () => buildMorning(env, send)]);
   if (want("weekly") || (!one && t.hh === 19 && t.dow === 0)) jobs.push(["weekly", () => buildWeeklyMsg(env, send)]);
   if (want("pay") || (!one && t.hh === 9)) jobs.push(["pay", () => buildPayMsg(env, send)]);   // V-13.2: pencere 09:00-09:59 (cron gecikince 15 dk'lık pencere kaçıyordu; günde bir kez garantisini "ran:" damgası veriyor)
@@ -1793,9 +1792,8 @@ async function saveState(env, state) {
   state.updatedAt = new Date().toISOString();
   const body = JSON.stringify(state);
   if (env.PORTFOLIO) {
-    let key = "state";
-    try { if (!(await env.PORTFOLIO.get("state"))) { const l = await env.PORTFOLIO.list(); if (l.keys && l.keys.length) key = l.keys[0].name; } } catch (e) {}
-    await env.PORTFOLIO.put(key, body);
+    // V-1.72: aynı yanlış list()-ilk-anahtar yedeği burada da vardı, kaldırıldı (bkz. pickKV)
+    await env.PORTFOLIO.put("state", body);
     return "KV";
   }
   const base = (env.SYNC_URL || "").trim().replace(/\/+$/, "");
@@ -1836,7 +1834,7 @@ function snapshotRecord(keys, date) {
     ts: new Date().toISOString(), src: "worker"
   };
 }
-async function writeSnapshot(env) {
+async function writeSnapshot(env, dry) {
   const st = await fetchState(env);
   const keys = st.keys || {};
   let rep = null;
@@ -1867,19 +1865,26 @@ async function writeSnapshot(env) {
     });
     fk.priceUpd = new Date().toISOString();
   }
+  if (dry) return `[DRY] ${date} · toplam ${usd(rec.total)} · ${hist.length} kayıt (KV'ye yazılmadı)` + (rep ? ` · fiyat ${rep.crypto + rep.stock}` : "");
   const where = await saveState(env, fresh);
   return `${date} · toplam ${usd(rec.total)} · ${hist.length} kayıt · ${where}` + (rep ? ` · fiyat ${rep.crypto + rep.stock}` : "");
 }
 
 /* ---------- BİLANÇO (EARNINGS) TARİHLERİ ---------- */
-async function refreshEarnings(env) {
+async function refreshEarnings(env, dry) {
   const st = await fetchState(env);
   const keys = st.keys || {};
   const fh = apiKeyOf(env, keys, "finnhub");
   if (!fh) return "Finnhub anahtarı yok";
   const positions = Array.isArray(keys.positions) ? keys.positions : [];
   const watch = Array.isArray(keys.watch) ? keys.watch : [];
-  const items = [...positions, ...watch].filter(x => x && x.t && !x.cg && !x.manual && num(x.qty) !== 0 || (x && x.t && !x.cg && !x.manual));
+  // V-1.72: eskiden operatör önceliği yüzünden qty!==0 koşulu hiç etkisiz kalıyordu (kapalı/0
+  // adetli pozisyonlar da listeye giriyordu). Artık pozisyonlarda kapalı olan hariç tutuluyor,
+  // watch öğelerinde zaten qty diye bir alan olmadığı için o koşul aranmıyor.
+  const items = [
+    ...positions.filter(x => x && x.t && !x.cg && !x.manual && num(x.qty) !== 0),
+    ...watch.filter(x => x && x.t && !x.cg && !x.manual)
+  ];
   const syms = [...new Set(items.map(x => x.t.toUpperCase()))];
   const from = trShift(0), to = trShift(120);
   let ok = 0;
@@ -1902,6 +1907,7 @@ async function refreshEarnings(env) {
     const m = x && x.t && map[x.t.toUpperCase()];
     if (m) { x.earn = m.earn; x.earnEps = m.earnEps; x.earnHour = m.earnHour; x.earnAt = Date.now(); }
   });
+  if (dry) return `[DRY] ${ok}/${syms.length} sembol bulundu (KV'ye yazılmadı)`;
   await saveState(env, fresh);
   return `${ok}/${syms.length} sembol güncellendi`;
 }
