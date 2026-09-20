@@ -2314,7 +2314,7 @@ function relPerf(dayPct, mkt) {
 async function aiParagraph(env, keys, facts, kind) {
   const key = apiKeyOf(env, keys, "apiKey");
   if (!key) return "";
-  const model = ((keys.apiKeys && keys.apiKeys.aiModel) || "claude-sonnet-5") + "";
+  const model = ((keys.apiKeys && keys.apiKeys.aiModelPro) || "claude-opus-5") + "";
   const system = "Türkçe yaz. Sana JSON içinde verilmeyen hiçbir bilgiyi (haber, sebep, olay) UYDURMA — emin olmadığın ya da veri yetersizse o kısmı atla ya da kısa geç; boş/kısa kalması uydurmaktan iyidir. Metninde RAKAM/SAYI/YÜZDE YAZMA — sayılar mesajın üst kısmında zaten var; sen yalnızca verilen sayılardan çıkardığın NİTEL yorumu yaz ('geniş tabanlı bir gerileme', 'birkaç isme bağlı sınırlı bir yükseliş', 'son bir aylık eğilimin tersine döndü' gibi). Sembol adları yazılabilir. Yatırım tavsiyesi verme. Süslü başlık, madde işareti, markdown kullanma — düz metin, en fazla 4 kısa cümle.";
   /* V-11.0: zaman kayması düzeltmesi — performans verisi DÜNÜN kapanışına ait, bugüne dair
      yalnız takvim (earnings/makro) bilgisi var. Etiketler facts içinde de tarihli veriliyor.
