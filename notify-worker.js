@@ -1,5 +1,5 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.2 (cron iz kaydı /runlog · pay penceresi 1 saat · damga iş bitince)
+   Terminal · BİLDİRİM WORKER  ·  V-13.3 (sabah/haftalık mesaj: subrequest sınırı aşımı düzeltildi)
    ------------------------------------------------------------
    Veriyi DOĞRUDAN KV'den okur (worker-to-worker HTTP yok).
    "port" (uygulama) ve "portfolio-sync" worker'larına DOKUNMAZ.
@@ -15,7 +15,8 @@
         TEST_KEY   = test parolan (ör. port2026)
       (KV kullanınca SYNC_URL / SYNC_PW GEREKMEZ. İstersen HTTP yedeği için
        yine de ekleyebilirsin — KV yoksa ona düşer.)
-   4) Deploy. Triggers → Cron: her 15 dakikada bir, TEK cron yeter (yildiz/15 bosluk yildiz x4)
+   4) Deploy. Triggers → Cron: her 30 dakikada bir, TEK cron yeter (yildiz/30 bosluk yildiz x4) —
+      bkz. wrangler.toml [triggers].crons; sabah/haftalık mesaj mm>=30 şartına göre tetiklenir.
 
    TEST:
      Ham teşhis (veri kaynağını gösterir):  /?probe=1&key=port2026
@@ -568,7 +569,7 @@ function setStockPrice(positions, sym, price, dp) {
     p.srcAt = Date.now(); p.src = "live";   // P.8: cihazlar arası merge fiyatı bununla ayırt ediyor
   } });
 }
-async function fetchLivePrices(env, keys) {
+async function fetchLivePrices(env, keys, budget) {
   const positions = Array.isArray(keys.positions) ? keys.positions : [];
   const rep = { crypto: 0, stock: 0, fail: [] };
 
@@ -605,6 +606,9 @@ async function fetchLivePrices(env, keys) {
   const failSyms = [];
   if (fh) {
     for (let si = 0; si < stocks.length; si++) {
+      // V-13.3: subrequest bütçesi biterse kalan sembolleri sessizce atla — hata fırlatıp
+      // tüm mesajı (ve sondaki WhatsApp gönderimini) iptal etmesin.
+      if (budget && !budget.take()) { failSyms.push(...stocks.slice(si)); rep.fail.push("subrequest bütçesi bitti — kalan " + (stocks.length - si) + " sembol atlandı"); break; }
       const sym = stocks[si];
       try {
         const r = await fetch("https://finnhub.io/api/v1/quote?symbol=" + encodeURIComponent(sym) + "&token=" + encodeURIComponent(fh), { headers: ua() });
@@ -620,7 +624,7 @@ async function fetchLivePrices(env, keys) {
   } else { failSyms.push(...stocks); rep.fail.push("Finnhub anahtarı yok (ne worker secret'i ne Ayarlar'daki) → hisse fiyatı son sync'ten"); }
 
   const td = apiKeyOf(env, keys, "twelvedata");
-  if (td && failSyms.length) {
+  if (td && failSyms.length && (!budget || budget.take())) {
     try {
       const syms = [...new Set(failSyms)].filter(Boolean);
       const r = await fetch("https://api.twelvedata.com/quote?symbol=" + encodeURIComponent(syms.join(",")) + "&apikey=" + encodeURIComponent(td), { headers: ua() });
@@ -1424,9 +1428,13 @@ async function sendPushAll(env, payloadObj){
 }
 function trDateStr(){ const d=new Date(new Date().toLocaleString("en-US",{timeZone:"Europe/Istanbul"})); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
 /* Her 15 dk: canlı fiyat → pozisyon gün içi ±%10 → push (gün içinde tekrar etmez). */
-async function runPushChecks(env){
+async function runPushChecks(env, out){
   const state=await fetchState(env); const keys=(state&&state.keys)||{};
   try{ await fetchLivePrices(env, keys); }catch(e){}
+  // V-13.3: aynı cron koşumunda morning/weekly de fiyat çekmesin diye burada çekilen
+  // güncel state/keys dışarı veriliyor — aynı invocation'da fiyatları İKİNCİ KEZ çekmek
+  // (2x Finnhub sembol taraması) subrequest sınırını aşıp mesajın hiç gönderilmemesine yol açıyordu.
+  if (out) { out.state = state; out.keys = keys; }
   const cfg=notifCfgOf(keys);
   const today=trDateStr();
   let alerted={}, sentToday=0;
@@ -1741,16 +1749,18 @@ async function dispatch(env, job, dry) {
   const hhmm = String(t.hh).padStart(2, "0") + ":" + String(t.mm).padStart(2, "0");
   const cron = !one;                                    // gerçek cron koşumu mu (elle çağrı değil)
   if (cron && !dry) await runLogAdd(env, "cron:" + t.date, hhmm, 96);
+  let shared = null;   // V-13.3: push job'ın çektiği fiyatlar morning/weekly ile paylaşılır (bkz. runPushChecks)
   if (!one || one === "push") {
-    try { await runPushChecks(env); log.push("push"); }
-    catch (e) { log.push("push:HATA " + errStr(e)); if (!dry) await runLogAdd(env, "push:" + t.date, hhmm + " HATA " + errStr(e), 8); }
+    shared = {};
+    try { await runPushChecks(env, shared); log.push("push"); }
+    catch (e) { shared = null; log.push("push:HATA " + errStr(e)); if (!dry) await runLogAdd(env, "push:" + t.date, hhmm + " HATA " + errStr(e), 8); }
   }
   const jobs = [];
   const want = n => one ? one === n : false;
   if (want("snapshot") || (!one && t.hh === 0)) jobs.push(["snapshot", () => writeSnapshot(env, dry)]);
   if (want("earnings") || (!one && t.hh === 6)) jobs.push(["earnings", () => refreshEarnings(env, dry)]);
-  if (want("morning") || (!one && t.hh === 7 && t.mm >= 30 && t.dow >= 1 && t.dow <= 5)) jobs.push(["morning", () => buildMorning(env, send)]);
-  if (want("weekly") || (!one && t.hh === 19 && t.dow === 0)) jobs.push(["weekly", () => buildWeeklyMsg(env, send)]);
+  if (want("morning") || (!one && t.hh === 7 && t.mm >= 30 && t.dow >= 1 && t.dow <= 5)) jobs.push(["morning", () => buildMorning(env, send, shared)]);
+  if (want("weekly") || (!one && t.hh === 19 && t.dow === 0)) jobs.push(["weekly", () => buildWeeklyMsg(env, send, shared)]);
   if (want("pay") || (!one && t.hh === 9)) jobs.push(["pay", () => buildPayMsg(env, send)]);   // V-13.2: pencere 09:00-09:59 (cron gecikince 15 dk'lık pencere kaçıyordu; günde bir kez garantisini "ran:" damgası veriyor)
   if (want("mail") || (!one && t.hh === 20 && t.dow === 5)) jobs.push(["mail", () => weeklyMail(env, send)]);   // V-1.1: haftalık JSON yedeği maili — önceden yalnız /mailtest ile elle tetikleniyordu, cron'a hiç bağlanmamıştı
   if (one && !jobs.length && one !== "push") log.push("bilinmeyen job: " + one);
@@ -1935,7 +1945,7 @@ function mktMerge(out, cache) {
   });
   return next;
 }
-async function marketRefs(env, keys) {
+async function marketRefs(env, keys, budget) {
   const out = {};
   const td = apiKeyOf(env, keys, "twelvedata"), fh = apiKeyOf(env, keys, "finnhub");
   const defs = [
@@ -1943,6 +1953,7 @@ async function marketRefs(env, keys) {
     { k: "XAU", td: "XAU/USD", px: "GLD" }, { k: "XAG", td: "XAG/USD", px: "SLV" }
   ];
   for (const d of defs) {
+    if (budget && !budget.take()) break;   // V-13.3: subrequest bütçesi biterse kalan referanslar "—" kalır
     if (td) {
       try {
         const r = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(d.td)}&apikey=${encodeURIComponent(td)}`, { headers: ua() });
@@ -1966,11 +1977,15 @@ async function marketRefs(env, keys) {
   }
   try {
     const h = Object.assign({}, ua()); const cg = apiKeyOf(env, keys, "cg"); if (cg) h["x-cg-demo-api-key"] = cg;
-    const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true", { headers: h });
-    if (r.ok) { const j = await r.json(); if (j.bitcoin) out.BTC = { v: j.bitcoin.usd, d: j.bitcoin.usd_24h_change, src: "BTC" }; }
-    const r2 = await fetch("https://api.coingecko.com/api/v3/global", { headers: h });
-    if (r2.ok) { const j2 = await r2.json(); const g = j2 && j2.data;
-      if (g && g.total_market_cap && g.total_market_cap.usd) out.MCAP = { v: g.total_market_cap.usd, d: g.market_cap_change_percentage_24h_usd, src: "CG" }; }
+    if (!budget || budget.take()) {
+      const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true", { headers: h });
+      if (r.ok) { const j = await r.json(); if (j.bitcoin) out.BTC = { v: j.bitcoin.usd, d: j.bitcoin.usd_24h_change, src: "BTC" }; }
+    }
+    if (!budget || budget.take()) {
+      const r2 = await fetch("https://api.coingecko.com/api/v3/global", { headers: h });
+      if (r2.ok) { const j2 = await r2.json(); const g = j2 && j2.data;
+        if (g && g.total_market_cap && g.total_market_cap.usd) out.MCAP = { v: g.total_market_cap.usd, d: g.market_cap_change_percentage_24h_usd, src: "CG" }; }
+    }
   } catch (e) {}
   try { const c = await mktCacheGet(env); await mktCachePut(env, mktMerge(out, c)); } catch (e) {}
   return out;
@@ -1986,9 +2001,10 @@ function mfmt(k, o) {
 
 /* ---------- MAKRO: son değerler + yaklaşan yayın takvimi (FRED) ---------- */
 const FRED_WATCH = { CPIAUCSL: "TÜFE", FEDFUNDS: "Fed faizi", UNRATE: "İşsizlik", PCEPILFE: "Çekirdek PCE" };
-async function fredCalendar(env, keys, days, backDays, maxRep, limit) {
+async function fredCalendar(env, keys, days, backDays, maxRep, limit, budget) {
   const key = apiKeyOf(env, keys, "fred");
   if (!key) return [];
+  if (budget && !budget.take()) return [];   // V-13.3: subrequest bütçesi biterse takvim sessizce boş kalır
   const from = trShift(-(backDays || 0)), to = trShift(days || 8);
   try {
     const r = await fetch(`https://api.stlouisfed.org/fred/releases/dates?api_key=${encodeURIComponent(key)}&file_type=json&realtime_start=${from}&realtime_end=${to}&include_release_dates_with_no_data=true&limit=1000`, { headers: ua() });
@@ -2317,9 +2333,10 @@ function relPerf(dayPct, mkt) {
 }
 
 /* ---------- YAPAY ZEKA YORUMU (yalnız verilen gerçek sayılardan) ---------- */
-async function aiParagraph(env, keys, facts, kind) {
+async function aiParagraph(env, keys, facts, kind, budget) {
   const key = apiKeyOf(env, keys, "apiKey");
   if (!key) return "";
+  if (budget && !budget.take()) return "";   // V-13.3: subrequest bütçesi biterse AI yorumu atlanır, mesajın çekirdeği yine gider
   const model = ((keys.apiKeys && keys.apiKeys.aiModelPro) || "claude-opus-5") + "";
   const system = "Türkçe yaz. Sana JSON içinde verilmeyen hiçbir bilgiyi (haber, sebep, olay) UYDURMA — emin olmadığın ya da veri yetersizse o kısmı atla ya da kısa geç; boş/kısa kalması uydurmaktan iyidir. Metninde RAKAM/SAYI/YÜZDE YAZMA — sayılar mesajın üst kısmında zaten var; sen yalnızca verilen sayılardan çıkardığın NİTEL yorumu yaz ('geniş tabanlı bir gerileme', 'birkaç isme bağlı sınırlı bir yükseliş', 'son bir aylık eğilimin tersine döndü' gibi). Sembol adları yazılabilir. Yatırım tavsiyesi verme. Süslü başlık, madde işareti, markdown kullanma — düz metin, en fazla 4 kısa cümle.";
   /* V-11.0: zaman kayması düzeltmesi — performans verisi DÜNÜN kapanışına ait, bugüne dair
@@ -2431,12 +2448,18 @@ function earningsOn(keys, date) {
 }
 
 /* ---------- SABAH MESAJI (Pzt–Cum 07:30) ---------- */
-async function buildMorning(env, send) {
-  const st = await fetchState(env); const keys = st.keys || {};
+async function buildMorning(env, send, shared) {
+  const st = (shared && shared.state) || await fetchState(env);
+  const keys = (shared && shared.keys) || st.keys || {};
+  /* V-13.3: subrequest bütçesi tüm fonksiyon boyunca paylaşılır — sınıra yaklaşınca önce
+     ekler (haber/makro/AI yorumu) sessizce atlanır, çekirdek sayılar ve sondaki WhatsApp
+     gönderimi HER ZAMAN yapılır. shared.keys zaten fiyatlanmışsa (aynı cron koşumunda push
+     job'ı çekmişse) bütçe daha geniş bırakılır çünkü en pahalı iş (pozisyon fiyatları) atlanır. */
+  const budget = subBudget((shared && shared.keys) ? 30 : 22);
   /* V-10.1: piyasa referansları ÖNCE. Cloudflare çağrı başına 50 subrequest veriyor;
      fetchLivePrices sembol başına 1 istek attığı için sıranın sonundaki referans düşüyordu. */
-  const mkt = await marketRefs(env, keys);
-  try { await fetchLivePrices(env, keys); } catch (e) {}
+  const mkt = await marketRefs(env, keys, budget);
+  if (!shared || !shared.keys) { try { await fetchLivePrices(env, keys, budget); } catch (e) {} }
   const s = computeSummary(keys);
   const today = trShift(0), yest = trShift(-1);
   const recY = recAt(keys, yest), recP = recAt(keys, trShift(-2));
@@ -2446,7 +2469,7 @@ async function buildMorning(env, send) {
   const openPos = (keys.positions || []).filter(p => num(p.qty) > 1e-6);
   const pos = openPos.filter(p => num(p.day) > 0).length, neg = openPos.filter(p => num(p.day) < 0).length;
   const tradeExp = openPos.filter(p => (p.group === "Trade")).reduce((a, p) => a + num(p.qty) * num(p.price), 0);
-  const cal = await fredCalendar(env, keys, 3);
+  const cal = await fredCalendar(env, keys, 3, undefined, undefined, undefined, budget);
   const eT = earningsOn(keys, today), eY = earningsOn(keys, trShift(1));
   const mT = macroLines(cal, today), mY = macroLines(cal, trShift(1));
   const d = trParts().d;
@@ -2492,8 +2515,8 @@ async function buildMorning(env, send) {
     bo.forEach(x => L.push(`${x.g} ${usd(x.v)} / ${usd(x.bud)} (${sg(x.pct, 1)}%)`));
     L.push("");
   }
-  /* V-11.1 (#13): dünkü hareket edenlerin haber başlıkları — bütçe kalırsa */
-  const budget = subBudget(8);
+  /* V-11.1 (#13): dünkü hareket edenlerin haber başlıkları — bütçe kalırsa (V-13.3: artık
+     fonksiyon başındaki tek paylaşılan bütçeden düşer, ayrı bir subBudget(8) değil) */
   const newsSyms = [...new Set([...(s.gainers || []), ...(s.losers || [])].map(x => x && x.t).filter(Boolean))].slice(0, 4);
   const news = await newsFor(env, keys, newsSyms, budget);
   if (news.length) {
@@ -2524,7 +2547,7 @@ async function buildMorning(env, send) {
     dunGoreli: rp,
     haberBasliklari: news.map(n => n.t + ": " + n.h),
     makroSonDegerler: fl.map(x => x.lab + " " + x.v + " (" + x.d + ")")
-  }, "daily");
+  }, "daily", budget);
   if (ai) { L.push("──────────"); L.push(""); L.push("*Günlük AI Yorum*"); L.push(ai); }
   L.push("");
   L.push("*Bugünün önemli olayları*");
@@ -2542,10 +2565,12 @@ async function buildMorning(env, send) {
 }
 
 /* ---------- HAFTALIK MESAJ (Pazar 19:00) ---------- */
-async function buildWeeklyMsg(env, send) {
-  const st = await fetchState(env); const keys = st.keys || {};
-  const mkt = await marketRefs(env, keys);                    // V-10.1: referanslar önce (subrequest bütçesi)
-  try { await fetchLivePrices(env, keys); } catch (e) {}
+async function buildWeeklyMsg(env, send, shared) {
+  const st = (shared && shared.state) || await fetchState(env);
+  const keys = (shared && shared.keys) || st.keys || {};
+  const budget = subBudget((shared && shared.keys) ? 30 : 22);   // V-13.3: bkz. buildMorning
+  const mkt = await marketRefs(env, keys, budget);                    // V-10.1: referanslar önce (subrequest bütçesi)
+  if (!shared || !shared.keys) { try { await fetchLivePrices(env, keys, budget); } catch (e) {} }
   const s = computeSummary(keys);
   const w0 = trShift(-7), today = trShift(0);
   const recNow = recAt(keys, today), recW = recAt(keys, w0);
@@ -2556,7 +2581,7 @@ async function buildWeeklyMsg(env, send) {
   const openPos = (keys.positions || []).filter(p => num(p.qty) > 1e-6);
   const up = mv.filter(x => x.pct > 0), dn = mv.filter(x => x.pct < 0);
   const tradeExp = openPos.filter(p => p.group === "Trade").reduce((a, p) => a + num(p.qty) * num(p.price), 0);
-  const cal = await fredCalendar(env, keys, 9, 7);          // geçen hafta + gelecek hafta
+  const cal = await fredCalendar(env, keys, 9, 7, undefined, undefined, budget);          // geçen hafta + gelecek hafta
   const evWeek = [], evNext = [];
   for (let i = -7; i <= 7; i++) {
     const dt = trShift(i);
@@ -2604,7 +2629,7 @@ async function buildWeeklyMsg(env, send) {
     gecenHafta: evWeek,
     piyasa: Object.fromEntries(Object.keys(mkt).map(k => [k, mfmt(k, mkt[k])])),
     gelecekHafta: evNext
-  }, "weekly");
+  }, "weekly", budget);
   if (ai) { L.push("──────────"); L.push(""); L.push("*Haftalık AI Yorum*"); L.push(ai); }
   L.push("");
   L.push("*Gelecek haftanın önemli olayları*");
