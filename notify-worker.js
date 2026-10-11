@@ -1,5 +1,5 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.5 (Tema Pano eklendi — yatırım temalarının performans/rotasyon panosu)
+   Terminal · BİLDİRİM WORKER  ·  V-13.6 (Tema Pano sepetleri Şakir onayıyla güncellendi, Defence teması eklendi)
    ------------------------------------------------------------
    Veriyi DOĞRUDAN KV'den okur (worker-to-worker HTTP yok).
    "port" (uygulama) ve "portfolio-sync" worker'larına DOKUNMAZ.
@@ -2111,22 +2111,23 @@ const THEME_BASKETS = [
   { id: "saas", label: "Software as a Service (SaaS)", cat: "Ana", etf: "IGV/SKYY", tickers: ["CRM","NOW","WDAY","TEAM","HUBS","DDOG","SNOW","NET","MDB","ZS","PANW","ADBE"] },
   { id: "cyber", label: "Cybersecurity", cat: "Ana", etf: "CIBR/HACK", tickers: ["CRWD","PANW","FTNT","ZS","OKTA","CYBR","QLYS","TENB","VRNS","NET","S","GEN"] },
   { id: "semis", label: "Semiconductors", cat: "Ana", etf: "SOXX/SMH", tickers: ["NVDA","AVGO","TSM","AMD","QCOM","TXN","AMAT","LRCX","KLAC","MU","ADI","MRVL","ON","ASML"] },
-  { id: "semiequip", label: "Semiconductor Equipment / EUV", cat: "Yükselen", etf: "SOXX alt kümesi", tickers: ["ASML","AMAT","LRCX","KLAC","ENTG"] },
+  { id: "semiequip", label: "Semiconductor Equipment / EUV", cat: "Yükselen", etf: "SOXX alt kümesi", tickers: ["ASML","AMAT","LRCX","KLAC","ENTG","ONTO","UCTT"] },
   { id: "robotics", label: "Robotics / Automation", cat: "Ana", etf: "BOTZ/ROBO", tickers: ["ISRG","ROK","EMR","TER","ZBRA","PATH","IRBT","CGNX","NVT","ABB"] },
   { id: "clean", label: "Clean Energy / Solar", cat: "Ana", etf: "TAN/ICLN", tickers: ["FSLR","ENPH","SEDG","RUN","NEE","BE","PLUG","ARRY","SHLS","CSIQ"] },
   { id: "nuclear", label: "Uranium / Nuclear", cat: "Yükselen", etf: "URA/NLR", tickers: ["CCJ","UEC","DNN","UUUU","LEU","SMR","OKLO","NNE","BWXT","CEG"] },
   { id: "rare", label: "Rare Earth / Critical Minerals", cat: "Yükselen", etf: "REMX", tickers: ["MP","ALB","LAC","SQM","VALE","TMC"] },
   { id: "space", label: "Space / Defense", cat: "Ana", etf: "ITA/ARKX", tickers: ["LMT","RTX","NOC","GD","LHX","BA","KTOS","RKLB","LDOS","HII"] },
   { id: "genomics", label: "Genomics / Biotech", cat: "Ana", etf: "ARKG", tickers: ["CRSP","NTLA","BEAM","VRTX","REGN","ILMN","EXAS","PACB","TXG","SRPT"] },
-  { id: "copper", label: "Copper Supply Deficit", cat: "Yükselen", etf: "COPX", tickers: ["FCX","SCCO","TECK","HBM","ERO"] },
+  { id: "copper", label: "Copper Supply Deficit", cat: "Yükselen", etf: "COPX", tickers: ["FCX","SCCO","TECK","HBM","ERO","RIO","BHP"] },
   /* --- oneri:true — ETF yok, Şakir'in onayı bekleniyor (§0F) --- */
   { id: "reshore", label: "Reshoring / Onshoring", cat: "Düşen", oneri: true, tickers: ["CAT","DE","HON","ETN","PH","ROK","GWW","FAST","URI","EMR"] },
   { id: "aipower", label: "AI Datacenter Power", cat: "Yükselen", oneri: true, tickers: ["VRT","ETN","NRG","VST","CEG","GEV","POWL"] },
-  { id: "humanoid", label: "Humanoid Robotics", cat: "Yükselen", oneri: true, tickers: ["TSLA","NVDA","ISRG","TER"] },
-  { id: "quantum", label: "Quantum Computing", cat: "Yükselen", oneri: true, tickers: ["IONQ","RGTI","QBTS","QUBT","IBM","GOOGL","HON"] },
-  { id: "memory", label: "Memory / AI Storage Supercycle", cat: "Yükselen", oneri: true, tickers: ["MU","WDC","STX","SNDK"] },
-  { id: "neoclouds", label: "Neoclouds / AI Cloud Infrastructure", cat: "Yükselen", oneri: true, tickers: ["CRWV","NBIS","APLD","IREN","CIFR"] },
-  { id: "defensetech", label: "Defense Tech / Autonomous Weapons", cat: "Ana", oneri: true, tickers: ["KTOS","RKLB","PLTR","AVAV","LDOS","LHX"] },
+  { id: "humanoid", label: "Humanoid Robotics", cat: "Yükselen", oneri: true, tickers: ["TSLA","ISRG","TER","RR","SYM","SERV"] },
+  { id: "quantum", label: "Quantum Computing", cat: "Yükselen", oneri: true, tickers: ["IONQ","RGTI","QBTS","QUBT","IBM","HON"] },
+  { id: "memory", label: "Memory / AI Storage Supercycle", cat: "Yükselen", oneri: true, tickers: ["MU","WDC","STX","SNDK","PSTG","NTAP"] },
+  { id: "neoclouds", label: "Neoclouds / AI Cloud Infrastructure", cat: "Yükselen", oneri: true, tickers: ["CRWV","NBIS","APLD","IREN","CIFR","WULF","HUT"] },
+  { id: "defensetech", label: "Defense Tech / Autonomous Weapons", cat: "Ana", oneri: true, tickers: ["KTOS","AVAV","LDOS","LHX","ONDS","OSS","RCAT","UMAC"] },
+  { id: "defence", label: "Defence", cat: "Ana", oneri: true, tickers: ["PLTR","LMT","RTX","NOC","GD","LHX"] },
 ];
 const THEME_BARS_LEN = 300;   // ~14 ay günlük bar — 200G SMA + YTD + 6A geriye bakış + 40 günlük rotasyon için yeterli
 const THEME_TD_CHUNK = 8;     // tek time_series isteğinde kaç sembol (ihtiyatlı — fetchLivePrices'taki toplu quote isteğiyle aynı ruh)
