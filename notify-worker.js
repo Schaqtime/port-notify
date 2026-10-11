@@ -1,5 +1,5 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.4 (sabah mesajı: tek-tike bağımlı kırılgan pencere + güvenlik ağı eklendi)
+   Terminal · BİLDİRİM WORKER  ·  V-13.5 (Tema Pano eklendi — yatırım temalarının performans/rotasyon panosu)
    ------------------------------------------------------------
    Veriyi DOĞRUDAN KV'den okur (worker-to-worker HTTP yok).
    "port" (uygulama) ve "portfolio-sync" worker'larına DOKUNMAZ.
@@ -111,6 +111,32 @@ export default {
       if (!exp || k !== exp) return txt("unauthorized", 401);
       try { return txt(JSON.stringify(await idxScan(env, url.searchParams)), 200, "application/json; charset=utf-8"); }
       catch (e) { return txt(JSON.stringify({ ok: false, error: errStr(e) }), 200, "application/json; charset=utf-8"); }
+    }
+    /* V-13.5: TEMA PANO — ?cached=1 yalnız KV'den okur · ?scan=1 zorla tazeler · ?diag=1 ham
+       TwelveData yanıtlarını gösterir · parametresiz çağrı 20 saatten taze önbellek varsa onu
+       döner, yoksa tazeler (frontend'in normal açılışı budur, ağır tarama gereksiz tekrarlanmaz). */
+    if (url.pathname === "/themes") {
+      const k = url.searchParams.get("key") || "";
+      const exp = env.TEST_KEY || env.SYNC_PW || "";
+      if (!exp || k !== exp) return txt("unauthorized", 401);
+      try {
+        if (url.searchParams.get("diag") === "1") return txt(JSON.stringify(await themeScan(env, { diag: true })), 200, "application/json; charset=utf-8");
+        if (url.searchParams.get("cached") === "1") {
+          let raw = null; try { raw = env.PORTFOLIO ? await env.PORTFOLIO.get("theme:pulse") : null; } catch (e) {}
+          if (!raw) return txt(JSON.stringify({ ok: false, error: "önbellekte kayıt yok — önce ?scan=1 çalıştır" }), 200, "application/json; charset=utf-8");
+          return txt(raw, 200, "application/json; charset=utf-8");
+        }
+        const force = url.searchParams.get("scan") === "1";
+        if (!force) {
+          let raw = null; try { raw = env.PORTFOLIO ? await env.PORTFOLIO.get("theme:pulse") : null; } catch (e) {}
+          if (raw) {
+            try { const j = JSON.parse(raw); if (j && j.at && (Date.now() - new Date(j.at).getTime()) < 20 * 3600 * 1000) return txt(raw, 200, "application/json; charset=utf-8"); } catch (e) {}
+          }
+        }
+        const res = await themeScan(env, {});
+        if (res && res.ok) { try { await env.PORTFOLIO.put("theme:pulse", JSON.stringify(res)); } catch (e) {} }
+        return txt(JSON.stringify(res), 200, "application/json; charset=utf-8");
+      } catch (e) { return txt(JSON.stringify({ ok: false, error: errStr(e) }), 200, "application/json; charset=utf-8"); }
     }
     if (url.pathname === "/insider") {
       const k = url.searchParams.get("key") || "";
@@ -1759,6 +1785,9 @@ async function dispatch(env, job, dry) {
   const want = n => one ? one === n : false;
   if (want("snapshot") || (!one && t.hh === 0)) jobs.push(["snapshot", () => writeSnapshot(env, dry)]);
   if (want("earnings") || (!one && t.hh === 6)) jobs.push(["earnings", () => refreshEarnings(env, dry)]);
+  /* V-13.5: Tema Pano günlük tazeleme — piyasa açılışından önce, sessiz bir saatte (05:xx).
+     Ağır bir tarama olduğu için başarısız olsa da günün geri kalanı etkilenmesin diye ayrı iş. */
+  if (want("themes") || (!one && t.hh === 5)) jobs.push(["themes", async () => { const r = await themeScan(env, {}); if (r && r.ok && !dry) { try { await env.PORTFOLIO.put("theme:pulse", JSON.stringify(r)); } catch (e) {} } return r && r.ok ? "ok · " + (r.themes || []).length + " tema" : "HATA " + (r && r.error); }]);
   /* V-13.4: eskiden t.hh===7 ve t.mm 30'dan büyük/eşit şartı birlikteydi — cron 30 dakikada bir
      attığı için bu, GÜNDE TEK bir tike (tam 7:30) bağımlıydı; 7:00 tiki mm<30 yüzünden elenip
      8:00 saat dışı kalıyordu. Cloudflare cron'u "en iyi çaba" ile tetikler, tam dakikada garanti
@@ -2066,6 +2095,224 @@ async function fredLatest(env, keys, budget) {
   }
   if (rows.length) { try { await env.PORTFOLIO.put("fred:latest", JSON.stringify({ date: today, rows })); } catch (e) {} }
   return rows;
+}
+/* ============================================================
+   V-13.5: TEMA PANO — yatırım temalarının performans/rotasyon panosu (ThemePulse esinli)
+   ------------------------------------------------------------
+   Sepetler ELLE KÜRATE EDİLMİŞ (§0F — hiçbir API "bu hisse şu temaya girer" demiyor).
+   "etf" alanı olanlar gerçek, halka açık tematik ETF'lerin (SOXX, CIBR, BOTZ, TAN, URA,
+   ITA, ARKG, COPX vb.) herkesçe bilinen büyük holdinglerinden alınmıştır. "oneri:true"
+   olanlarda karşılık gelen bir ETF yok — Şakir'in onayı bekleniyor, UI'da ayrı rozetle
+   işaretlenir ve bu dosyadaki yorumda da açıkça yazılıdır.
+   Hesaplanan HER ŞEY TwelveData'nın günlük kapanış fiyatından türetilir — tahmin/uydurma
+   yok; kapsam <3 hisseyse tema hiç gösterilmez ("yetersiz kapsam", tıpkı istenen kural).
+============================================================ */
+const THEME_BASKETS = [
+  { id: "saas", label: "Software as a Service (SaaS)", cat: "Ana", etf: "IGV/SKYY", tickers: ["CRM","NOW","WDAY","TEAM","HUBS","DDOG","SNOW","NET","MDB","ZS","PANW","ADBE"] },
+  { id: "cyber", label: "Cybersecurity", cat: "Ana", etf: "CIBR/HACK", tickers: ["CRWD","PANW","FTNT","ZS","OKTA","CYBR","QLYS","TENB","VRNS","NET","S","GEN"] },
+  { id: "semis", label: "Semiconductors", cat: "Ana", etf: "SOXX/SMH", tickers: ["NVDA","AVGO","TSM","AMD","QCOM","TXN","AMAT","LRCX","KLAC","MU","ADI","MRVL","ON","ASML"] },
+  { id: "semiequip", label: "Semiconductor Equipment / EUV", cat: "Yükselen", etf: "SOXX alt kümesi", tickers: ["ASML","AMAT","LRCX","KLAC","ENTG"] },
+  { id: "robotics", label: "Robotics / Automation", cat: "Ana", etf: "BOTZ/ROBO", tickers: ["ISRG","ROK","EMR","TER","ZBRA","PATH","IRBT","CGNX","NVT","ABB"] },
+  { id: "clean", label: "Clean Energy / Solar", cat: "Ana", etf: "TAN/ICLN", tickers: ["FSLR","ENPH","SEDG","RUN","NEE","BE","PLUG","ARRY","SHLS","CSIQ"] },
+  { id: "nuclear", label: "Uranium / Nuclear", cat: "Yükselen", etf: "URA/NLR", tickers: ["CCJ","UEC","DNN","UUUU","LEU","SMR","OKLO","NNE","BWXT","CEG"] },
+  { id: "rare", label: "Rare Earth / Critical Minerals", cat: "Yükselen", etf: "REMX", tickers: ["MP","ALB","LAC","SQM","VALE","TMC"] },
+  { id: "space", label: "Space / Defense", cat: "Ana", etf: "ITA/ARKX", tickers: ["LMT","RTX","NOC","GD","LHX","BA","KTOS","RKLB","LDOS","HII"] },
+  { id: "genomics", label: "Genomics / Biotech", cat: "Ana", etf: "ARKG", tickers: ["CRSP","NTLA","BEAM","VRTX","REGN","ILMN","EXAS","PACB","TXG","SRPT"] },
+  { id: "copper", label: "Copper Supply Deficit", cat: "Yükselen", etf: "COPX", tickers: ["FCX","SCCO","TECK","HBM","ERO"] },
+  /* --- oneri:true — ETF yok, Şakir'in onayı bekleniyor (§0F) --- */
+  { id: "reshore", label: "Reshoring / Onshoring", cat: "Düşen", oneri: true, tickers: ["CAT","DE","HON","ETN","PH","ROK","GWW","FAST","URI","EMR"] },
+  { id: "aipower", label: "AI Datacenter Power", cat: "Yükselen", oneri: true, tickers: ["VRT","ETN","NRG","VST","CEG","GEV","POWL"] },
+  { id: "humanoid", label: "Humanoid Robotics", cat: "Yükselen", oneri: true, tickers: ["TSLA","NVDA","ISRG","TER"] },
+  { id: "quantum", label: "Quantum Computing", cat: "Yükselen", oneri: true, tickers: ["IONQ","RGTI","QBTS","QUBT","IBM","GOOGL","HON"] },
+  { id: "memory", label: "Memory / AI Storage Supercycle", cat: "Yükselen", oneri: true, tickers: ["MU","WDC","STX","SNDK"] },
+  { id: "neoclouds", label: "Neoclouds / AI Cloud Infrastructure", cat: "Yükselen", oneri: true, tickers: ["CRWV","NBIS","APLD","IREN","CIFR"] },
+  { id: "defensetech", label: "Defense Tech / Autonomous Weapons", cat: "Ana", oneri: true, tickers: ["KTOS","RKLB","PLTR","AVAV","LDOS","LHX"] },
+];
+const THEME_BARS_LEN = 300;   // ~14 ay günlük bar — 200G SMA + YTD + 6A geriye bakış + 40 günlük rotasyon için yeterli
+const THEME_TD_CHUNK = 8;     // tek time_series isteğinde kaç sembol (ihtiyatlı — fetchLivePrices'taki toplu quote isteğiyle aynı ruh)
+const THEME_TRAIL_6M = 126;   // ~6 ay iş günü
+const THEME_TRAIL_1M = 21;
+const THEME_TRAIL_1W = 5;
+const THEME_ROTATION_DAYS = 40;
+
+/* TwelveData'nın "values" sırası garanti değil → tarihe göre KENDİMİZ artan sıraya diziyoruz. */
+function themeParseSeries(values) {
+  return (values || [])
+    .map(x => ({ d: x.datetime, c: parseFloat(x.close) }))
+    .filter(x => x.d && isFinite(x.c))
+    .sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+}
+async function themeFetchBars(env, keys, symbols, diag) {
+  const td = apiKeyOf(env, keys, "twelvedata");
+  const out = {};
+  if (!td) { if (diag) diag.push({ err: "TwelveData anahtarı yok (Ayarlar → API, ya da worker secret TWELVEDATA)" }); return out; }
+  for (let i = 0; i < symbols.length; i += THEME_TD_CHUNK) {
+    const chunk = symbols.slice(i, i + THEME_TD_CHUNK);
+    try {
+      const u = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(chunk.join(","))}&interval=1day&outputsize=${THEME_BARS_LEN}&apikey=${encodeURIComponent(td)}`;
+      const r = await fetch(u, { headers: ua() });
+      const j = await r.json().catch(() => null);
+      if (diag) diag.push({ chunk, status: r.status, topKeys: j ? Object.keys(j).slice(0, 10) : null });
+      if (!r.ok || !j) continue;
+      if (chunk.length === 1) {
+        if (j.values) out[chunk[0]] = themeParseSeries(j.values);
+      } else {
+        chunk.forEach(sym => {
+          const v = j[sym];
+          if (v && v.values) out[sym] = themeParseSeries(v.values);
+          else if (diag && v && v.status === "error") diag.push({ sym, err: v.message });
+        });
+      }
+    } catch (e) { if (diag) diag.push({ chunk, err: errStr(e) }); }
+    await sleep(180);
+  }
+  return out;
+}
+/* ---- saf fonksiyonlar: yalnız bellekteki diziler üzerinde, ağa hiç çıkmaz ---- */
+function themeRetAt(series, backDays) {   // "backDays" iş günü önceki kapanışa göre getiri
+  const n = series.length; if (n < backDays + 1) return null;
+  const last = series[n - 1].c, prev = series[n - 1 - backDays].c;
+  return prev > 0 ? last / prev - 1 : null;
+}
+function themeRetAsOf(series, endIdx, backDays) {   // endIdx'teki kapanışa göre, backDays önceki kapanışa oranla getiri
+  if (endIdx < backDays || endIdx >= series.length) return null;
+  const last = series[endIdx].c, prev = series[endIdx - backDays].c;
+  return prev > 0 ? last / prev - 1 : null;
+}
+function themeTickerToday(series) {
+  const n = series.length; if (n < 20) return null;   // yetersiz geçmiş
+  const last = series[n - 1].c;
+  let sma200 = null;
+  if (n >= 200) { let s = 0; for (let i = n - 200; i < n; i++) s += series[i].c; sma200 = s / 200; }
+  return { last, r1d: themeRetAt(series, 1), r1w: themeRetAt(series, THEME_TRAIL_1W), r1m: themeRetAt(series, THEME_TRAIL_1M),
+    above200: sma200 != null ? last > sma200 : null };
+}
+function avgOf(arr) { const v = arr.filter(x => x != null && isFinite(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; }
+/* Çapraz-kesit yüzdelik sıra (0-100) — ham sayıyı diğer temalar arasındaki konumuna göre ölçekler. */
+function pctRank(values, idx) {
+  if (values[idx] == null) return null;
+  const known = values.filter(v => v != null);
+  if (known.length < 2) return 50;
+  const below = known.filter(v => v < values[idx]).length;
+  return Math.round(100 * below / (known.length - 1));
+}
+/* Bir temanın TÜM günlük bar'larla "bugün" veya "endIdx'te" özetini çıkarır (breadth/6A getiri). */
+function themeBasketAt(basket, barsBySym, endIdxBySym) {
+  const rows = basket.tickers.map(sym => {
+    const full = barsBySym[sym]; if (!full) return null;
+    const endIdx = endIdxBySym ? endIdxBySym[sym] : full.length - 1;
+    if (endIdx == null || endIdx < 0) return null;
+    const series = full.slice(0, endIdx + 1);
+    const t = themeTickerToday(series);
+    if (!t) return null;
+    return { sym, t, r6m: themeRetAsOf(full, endIdx, THEME_TRAIL_6M) };
+  }).filter(Boolean);
+  return rows;
+}
+function themeScan2(env, basket, barsBySym, spySeries) {
+  const rows = themeBasketAt(basket, barsBySym, null);
+  const covered = rows.length;
+  if (covered < 3) return { id: basket.id, label: basket.label, cat: basket.cat, etf: basket.etf, oneri: !!basket.oneri, covered, insufficient: true };
+  const r1d = avgOf(rows.map(r => r.t.r1d)), r1w = avgOf(rows.map(r => r.t.r1w)), r1m = avgOf(rows.map(r => r.t.r1m));
+  const withSma = rows.filter(r => r.t.above200 != null);
+  const breadth = withSma.length ? Math.round(100 * withSma.filter(r => r.t.above200).length / withSma.length) : null;
+  const r6m = avgOf(rows.map(r => r.r6m));
+  const spyIdx = spySeries.length - 1;
+  const rs63 = (avgOf(rows.map(r => themeRetAsOf(barsBySym[r.sym], barsBySym[r.sym].length - 1, 63))) ?? null);
+  const spyRs63 = themeRetAsOf(spySeries, spyIdx, 63);
+  const rsEdge = (rs63 != null && spyRs63 != null) ? rs63 - spyRs63 : null;
+  const ivme = (() => {
+    const now21 = avgOf(rows.map(r => themeRetAsOf(barsBySym[r.sym], barsBySym[r.sym].length - 1, 21)));
+    const prior21 = avgOf(rows.map(r => {
+      const full = barsBySym[r.sym]; const e = full.length - 1 - 21;
+      return e >= 21 ? themeRetAsOf(full, e, 21) : null;
+    }));
+    return (now21 != null && prior21 != null) ? now21 - prior21 : null;
+  })();
+  return { id: basket.id, label: basket.label, cat: basket.cat, etf: basket.etf, oneri: !!basket.oneri, covered,
+    r1d, r1w, r1m, rYtd: avgOf(rows.map(r => {
+      const full = barsBySym[r.sym]; const year = full[full.length - 1].d.slice(0, 4);
+      const first = full.find(x => x.d.slice(0, 4) === year);
+      return (first && first.c > 0) ? full[full.length - 1].c / first.c - 1 : null;
+    })), breadth, r6m, rsEdge, ivme };
+}
+/* 6A getiriye göre sıralama + çapraz-kesit momentum skoru (breadth %40 + RS %35 + ivme %25). */
+function themeRankAndScore(list) {
+  const scored = list.filter(x => !x.insufficient);
+  const r6ms = scored.map(x => x.r6m);
+  scored.sort((a, b) => (b.r6m ?? -Infinity) - (a.r6m ?? -Infinity));
+  scored.forEach((x, i) => { x.rank6m = x.r6m != null ? i + 1 : null; });
+  const rsEdges = scored.map(x => x.rsEdge), ivmes = scored.map(x => x.ivme);
+  scored.forEach(x => {
+    const bPct = x.breadth;   // zaten 0-100
+    const rPct = pctRank(rsEdges, scored.indexOf(x));
+    const iPct = pctRank(ivmes, scored.indexOf(x));
+    const parts = [[bPct, 0.40], [rPct, 0.35], [iPct, 0.25]].filter(p => p[0] != null);
+    const wsum = parts.reduce((a, p) => a + p[1], 0);
+    x.momentum = (parts.length && wsum > 0) ? Math.round(parts.reduce((a, p) => a + p[0] * p[1], 0) / wsum) : null;
+  });
+  const n = scored.length;
+  scored.forEach(x => {
+    if (x.rank6m == null || x.momentum == null) { x.quadrant = null; return; }
+    const leaderPast = x.rank6m <= Math.ceil(n / 2);
+    const accel = x.momentum >= 50;
+    x.quadrant = leaderPast ? (accel ? "lider_hizlaniyor" : "lider_solan") : (accel ? "donuyor" : "zayif");
+  });
+  return list;   // insufficient olanlar da listede kalır, UI "yetersiz kapsam" yazar
+}
+/* Son THEME_ROTATION_DAYS gün için GÜNLÜK rank6m geçmişi — yalnız bellekteki dizilerle, ağa çıkmaz. */
+function themeRotationJourney(basket, barsBySym, allBaskets, allBars) {
+  const full = basket.tickers.map(t => barsBySym[t]).filter(Boolean);
+  if (!full.length) return [];
+  const lastIdx = Math.min(...full.map(s => s.length - 1));
+  const journey = [];
+  for (let back = THEME_ROTATION_DAYS - 1; back >= 0; back--) {
+    const endIdx = lastIdx - back; if (endIdx < THEME_TRAIL_6M) continue;
+    const r6ms = allBaskets.map(b => {
+      const rows = b.tickers.map(t => { const s = allBars[t]; return s ? themeRetAsOf(s, Math.min(endIdx, s.length - 1), THEME_TRAIL_6M) : null; }).filter(x => x != null);
+      return rows.length >= 3 ? { id: b.id, r6m: avgOf(rows) } : null;   // aynı "yetersiz kapsam" eşiği (§0F) — journey'de de geçersiz rakip yarışa katılmasın
+    }).filter(Boolean).sort((a, b2) => b2.r6m - a.r6m);
+    const myRank = r6ms.findIndex(x => x.id === basket.id);
+    if (myRank >= 0) journey.push(myRank + 1);
+  }
+  return journey;
+}
+async function themeScan(env, opts) {
+  const diag = opts.diag ? [] : null;
+  let keys = {}; try { keys = (await fetchState(env)).keys || {}; } catch (e) {}
+  const symbolSet = new Set(["SPY"]);
+  THEME_BASKETS.forEach(b => b.tickers.forEach(t => symbolSet.add(t)));
+  const symbols = [...symbolSet];
+  const barsBySym = await themeFetchBars(env, keys, symbols, diag);
+  if (diag) return { ok: true, diag, symbolCount: symbols.length, gotCount: Object.keys(barsBySym).length };
+  const spySeries = barsBySym.SPY;
+  if (!spySeries || spySeries.length < THEME_TRAIL_6M + 10) return { ok: false, error: "SPY (karşılaştırma endeksi) verisi gelmedi — TwelveData anahtarı/limiti kontrol edilmeli" };
+  let list = THEME_BASKETS.map(b => themeScan2(env, b, barsBySym, spySeries));
+  list = themeRankAndScore(list);
+  list.forEach(x => {
+    if (x.insufficient) { x.journey = []; return; }
+    x.journey = themeRotationJourney(THEME_BASKETS.find(b => b.id === x.id), barsBySym, THEME_BASKETS, barsBySym);
+  });
+  /* İsabet paneli: 4 hafta önceki kadran çağrısı net bir yön öngörüyorsa (lider_hizlaniyor → artış,
+     zayif → düşüş), gerçekleşen getiriyle karşılaştırılır. "dönüyor"/"lider_solan" geçiş kadranları
+     net yön öngörmediği için değerlendirilmez (§0F — hüküm verilemeyecek yerde hüküm uydurulmaz). */
+  const hits = [];
+  THEME_BASKETS.forEach(b => {
+    const full = b.tickers.map(t => barsBySym[t]).filter(Boolean); if (!full.length) return;
+    const lastIdx = Math.min(...full.map(s => s.length - 1));
+    const backIdx = lastIdx - 20;   // ~4 hafta (iş günü)
+    if (backIdx < THEME_TRAIL_6M) return;   // yeterli geçmiş yok
+    const past = THEME_BASKETS.map(bb => themeScan2(env, bb, Object.fromEntries(symbols.map(s => [s, (barsBySym[s] || []).slice(0, backIdx + 1)])), spySeries.slice(0, backIdx + 1)));
+    const pastScored = themeRankAndScore(past);
+    const mine = pastScored.find(x => x.id === b.id);
+    if (!mine || !mine.quadrant || (mine.quadrant !== "lider_hizlaniyor" && mine.quadrant !== "zayif")) return;
+    const realized = avgOf(b.tickers.map(t => { const s = barsBySym[t]; return s ? s[s.length - 1].c / s[backIdx].c - 1 : null; }));
+    if (realized == null) return;
+    const dogru = mine.quadrant === "lider_hizlaniyor" ? realized > 0 : realized < 0;
+    hits.push({ id: b.id, label: b.label, quadrant: mine.quadrant, realized, dogru });
+  });
+  const hitRate = hits.length ? Math.round(100 * hits.filter(h => h.dogru).length / hits.length) : null;
+  return { ok: true, at: new Date().toISOString(), themes: list, hits, hitRate, coveredSymbols: Object.keys(barsBySym).length, totalSymbols: symbols.length };
 }
 /* ============================================================
    V-11.3: KÜMELENMİŞ İÇERİDEN ALIM  ·  SEC EDGAR Form 4
