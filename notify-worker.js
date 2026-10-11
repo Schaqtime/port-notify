@@ -1,5 +1,5 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.3 (sabah/haftalık mesaj: subrequest sınırı aşımı düzeltildi)
+   Terminal · BİLDİRİM WORKER  ·  V-13.4 (sabah mesajı: tek-tike bağımlı kırılgan pencere + güvenlik ağı eklendi)
    ------------------------------------------------------------
    Veriyi DOĞRUDAN KV'den okur (worker-to-worker HTTP yok).
    "port" (uygulama) ve "portfolio-sync" worker'larına DOKUNMAZ.
@@ -1759,7 +1759,19 @@ async function dispatch(env, job, dry) {
   const want = n => one ? one === n : false;
   if (want("snapshot") || (!one && t.hh === 0)) jobs.push(["snapshot", () => writeSnapshot(env, dry)]);
   if (want("earnings") || (!one && t.hh === 6)) jobs.push(["earnings", () => refreshEarnings(env, dry)]);
-  if (want("morning") || (!one && t.hh === 7 && t.mm >= 30 && t.dow >= 1 && t.dow <= 5)) jobs.push(["morning", () => buildMorning(env, send, shared)]);
+  /* V-13.4: eskiden t.hh===7 ve t.mm 30'dan büyük/eşit şartı birlikteydi — cron 30 dakikada bir
+     attığı için bu, GÜNDE TEK bir tike (tam 7:30) bağımlıydı; 7:00 tiki mm<30 yüzünden elenip
+     8:00 saat dışı kalıyordu. Cloudflare cron'u "en iyi çaba" ile tetikler, tam dakikada garanti
+     değildir — tek tik kaçınca o gün sabah mesajı hiç gönderilmeden kayboluyordu (pay'in
+     09:00-09:59 gibi geniş penceresi hiç yoktu). Artık pay ile aynı desen: tüm 7. saat
+     (2 tik: 7:00 ve 7:30) geçerli pencere. */
+  if (want("morning") || (!one && t.hh === 7 && t.dow >= 1 && t.dow <= 5)) jobs.push(["morning", () => buildMorning(env, send, shared)]);
+  /* V-13.4: güvenlik ağı — 7. saatteki iki tik de bir şekilde kaçarsa (worker hatası, cron
+     gecikmesi, soğuk başlangıç), sabah mesajı o gün ASLA sessizce kaybolmasın diye öğlene kadar
+     her tikte tekrar denenir. "ran:morning:<tarih>" damgası zaten varsa döngüdeki ranToday kontrolü
+     işi atlar — yani normal günde bu dal hiçbir ek gönderim yapmaz, yalnız gerçekten kaçırılan
+     günlerde devreye girer. */
+  if (!one && t.dow >= 1 && t.dow <= 5 && t.hh >= 8 && t.hh < 12) jobs.push(["morning", () => buildMorning(env, send, shared)]);
   if (want("weekly") || (!one && t.hh === 19 && t.dow === 0)) jobs.push(["weekly", () => buildWeeklyMsg(env, send, shared)]);
   if (want("pay") || (!one && t.hh === 9)) jobs.push(["pay", () => buildPayMsg(env, send)]);   // V-13.2: pencere 09:00-09:59 (cron gecikince 15 dk'lık pencere kaçıyordu; günde bir kez garantisini "ran:" damgası veriyor)
   if (want("mail") || (!one && t.hh === 20 && t.dow === 5)) jobs.push(["mail", () => weeklyMail(env, send)]);   // V-1.1: haftalık JSON yedeği maili — önceden yalnız /mailtest ile elle tetikleniyordu, cron'a hiç bağlanmamıştı
