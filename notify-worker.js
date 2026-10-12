@@ -1,5 +1,6 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.6 (Tema Pano sepetleri Şakir onayıyla güncellendi, Defence teması eklendi)
+   Terminal · BİLDİRİM WORKER  ·  V-13.7 (subrequest bütçesi invocation boyunca paylaşılıyor — morning/weekly'nin
+   sonundaki WhatsApp gönderimini kıran "Too many subrequests" hatası kalıcı çözüldü)
    ------------------------------------------------------------
    Veriyi DOĞRUDAN KV'den okur (worker-to-worker HTTP yok).
    "port" (uygulama) ve "portfolio-sync" worker'larına DOKUNMAZ.
@@ -601,7 +602,7 @@ async function fetchLivePrices(env, keys, budget) {
 
   // 1) Kripto — CoinGecko (anahtarsız; CG_KEY varsa demo başlığı)
   const cgIds = [...new Set(positions.filter(p => p.cg).map(p => p.cg))];
-  if (cgIds.length) {
+  if (cgIds.length && (!budget || budget.take())) {
     try {
       const h = Object.assign({}, ua());
       if (env.CG_KEY) h["x-cg-demo-api-key"] = env.CG_KEY;
@@ -1456,7 +1457,11 @@ function trDateStr(){ const d=new Date(new Date().toLocaleString("en-US",{timeZo
 /* Her 15 dk: canlı fiyat → pozisyon gün içi ±%10 → push (gün içinde tekrar etmez). */
 async function runPushChecks(env, out){
   const state=await fetchState(env); const keys=(state&&state.keys)||{};
-  try{ await fetchLivePrices(env, keys); }catch(e){}
+  // V-13.7: artık invocation'ın PAYLAŞILAN bütçesiyle çekiliyor — bkz. dispatch() şu açıklama:
+  // bu çağrı eskiden bütçesiz (sınırsız) çalışıyordu; portföydeki hisse sayısı büyüdükçe
+  // tek başına Cloudflare'in 50 alt-istek sınırını dolduruyor, sıradaki morning/pay/weekly
+  // işinin sonundaki WhatsApp gönderimi (CallMeBot) hep "Too many subrequests" ile kırılıyordu.
+  try{ await fetchLivePrices(env, keys, out && out.budget); }catch(e){}
   // V-13.3: aynı cron koşumunda morning/weekly de fiyat çekmesin diye burada çekilen
   // güncel state/keys dışarı veriliyor — aynı invocation'da fiyatları İKİNCİ KEZ çekmek
   // (2x Finnhub sembol taraması) subrequest sınırını aşıp mesajın hiç gönderilmemesine yol açıyordu.
@@ -1778,6 +1783,13 @@ async function dispatch(env, job, dry) {
   let shared = null;   // V-13.3: push job'ın çektiği fiyatlar morning/weekly ile paylaşılır (bkz. runPushChecks)
   if (!one || one === "push") {
     shared = {};
+    /* V-13.7: KALICI DÜZELTME — eskiden push/morning/pay/weekly'nin her biri kendi küçük
+       "bütçe"sini (subBudget) AYRI AYRI sayıyordu; her biri "benim payım bitmedi" dese de
+       öncekinin gerçek ağ isteklerini görmüyordu, toplamda Cloudflare'in invocation başına
+       50 alt-istek sınırını aşıp sondaki WhatsApp (CallMeBot) gönderimini kırıyordu (bkz.
+       /runlog: morning 08:00-11:30 arası HER tikte "Too many subrequests" ile düşüyordu).
+       Artık TEK bütçe invocation boyunca paylaşılıyor; 50'nin altında gerçek pay bırakılıyor. */
+    shared.budget = subBudget(40);
     try { await runPushChecks(env, shared); log.push("push"); }
     catch (e) { shared = null; log.push("push:HATA " + errStr(e)); if (!dry) await runLogAdd(env, "push:" + t.date, hhmm + " HATA " + errStr(e), 8); }
   }
@@ -1993,9 +2005,16 @@ async function marketRefs(env, keys, budget) {
     { k: "SPX", td: "SPX", px: "SPY" }, { k: "NDX", td: "NDX", px: "QQQ" },
     { k: "XAU", td: "XAU/USD", px: "GLD" }, { k: "XAG", td: "XAG/USD", px: "SLV" }
   ];
+  /* V-13.7: eskiden bir def için "budget.take()" TEK seferde harcanıyordu ama TD+FH retry'siyle
+     birlikte aynı def GERÇEKTE 1-3 ağ isteği yapabiliyordu — bütçe nesnesi bunu görmüyordu,
+     yani "bütçem var" derken Cloudflare'in gerçek sınırı sessizce aşılıyordu. Artık her GERÇEK
+     fetch denemesi kendi başına 1 birim harcıyor; bütçe biterse kalan referanslar tazelenmeden
+     "—"/son bilinen değer kalır, yarım kalan bir denemeye devam edilmez. */
+  let starved = false;
   for (const d of defs) {
-    if (budget && !budget.take()) break;   // V-13.3: subrequest bütçesi biterse kalan referanslar "—" kalır
+    if (starved) break;
     if (td) {
+      if (budget && !budget.take()) { starved = true; break; }
       try {
         const r = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(d.td)}&apikey=${encodeURIComponent(td)}`, { headers: ua() });
         if (r.ok) { const j = await r.json(); const v = parseFloat(j.close != null ? j.close : j.price);
@@ -2006,6 +2025,7 @@ async function marketRefs(env, keys, budget) {
       /* V-10.0: Finnhub dakikalık limite takılırsa (429) tek sefer tekrar dener.
          SPX/NDX'in "—" kalmasının sebebi buydu; veri yoksa yine "—" gösterilir, uydurulmaz. */
       for (let a = 0; a < 2; a++) {
+        if (budget && !budget.take()) { starved = true; break; }
         try {
           const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${d.px}&token=${encodeURIComponent(fh)}`, { headers: ua() });
           if (r.ok) { const q = await r.json(); if (q && q.c > 0) { out[d.k] = { v: q.c, d: q.dp, src: d.px }; break; } }
@@ -2013,7 +2033,7 @@ async function marketRefs(env, keys, budget) {
         } catch (e) { break; }
         if (a === 0) await sleep(1500);
       }
-      await sleep(900);
+      if (!starved) await sleep(900);
     }
   }
   try {
@@ -2715,7 +2735,7 @@ async function buildMorning(env, send, shared) {
      ekler (haber/makro/AI yorumu) sessizce atlanır, çekirdek sayılar ve sondaki WhatsApp
      gönderimi HER ZAMAN yapılır. shared.keys zaten fiyatlanmışsa (aynı cron koşumunda push
      job'ı çekmişse) bütçe daha geniş bırakılır çünkü en pahalı iş (pozisyon fiyatları) atlanır. */
-  const budget = subBudget((shared && shared.keys) ? 30 : 22);
+  const budget = (shared && shared.budget) || subBudget(22);   // V-13.7: bkz. dispatch — artık invocation ortak bütçesi
   /* V-10.1: piyasa referansları ÖNCE. Cloudflare çağrı başına 50 subrequest veriyor;
      fetchLivePrices sembol başına 1 istek attığı için sıranın sonundaki referans düşüyordu. */
   const mkt = await marketRefs(env, keys, budget);
@@ -2828,7 +2848,7 @@ async function buildMorning(env, send, shared) {
 async function buildWeeklyMsg(env, send, shared) {
   const st = (shared && shared.state) || await fetchState(env);
   const keys = (shared && shared.keys) || st.keys || {};
-  const budget = subBudget((shared && shared.keys) ? 30 : 22);   // V-13.3: bkz. buildMorning
+  const budget = (shared && shared.budget) || subBudget(22);   // V-13.7: bkz. dispatch — artık invocation ortak bütçesi
   const mkt = await marketRefs(env, keys, budget);                    // V-10.1: referanslar önce (subrequest bütçesi)
   if (!shared || !shared.keys) { try { await fetchLivePrices(env, keys, budget); } catch (e) {} }
   const s = computeSummary(keys);
