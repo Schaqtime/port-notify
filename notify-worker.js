@@ -1,6 +1,6 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.7 (subrequest bütçesi invocation boyunca paylaşılıyor — morning/weekly'nin
-   sonundaki WhatsApp gönderimini kıran "Too many subrequests" hatası kalıcı çözüldü)
+   Terminal · BİLDİRİM WORKER  ·  V-13.8 (subrequest bütçesi invocation boyunca paylaşılıyor + pay'in
+   mesajı günlerce sessizce yutan gereksiz içerik-dedup'ı kaldırıldı — her iki "mesaj gelmiyor" kökeni de çözüldü)
    ------------------------------------------------------------
    Veriyi DOĞRUDAN KV'den okur (worker-to-worker HTTP yok).
    "port" (uygulama) ve "portfolio-sync" worker'larına DOKUNMAZ.
