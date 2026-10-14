@@ -1630,15 +1630,14 @@ async function buildPayMsg(env, send) {
     const text = nearest
       ? `Ödeme Hatırlatma 💳\nYakın vadede (3 gün içinde) ödemen yok.\nEn yakın: ${nearest.date.slice(8)}.${nearest.date.slice(5, 7)} · ${nearest.name}${nearest.amt > 0 ? " · " + tl(nearest.amt) : ""}`
       : `Ödeme Hatırlatma 💳\nKayıtlı bekleyen ödeme/abonelik yok.`;
-    if (send) {
-      let sig = 0; for (let i = 0; i < text.length; i++) sig = (sig * 31 + text.charCodeAt(i)) | 0; sig = String(sig);
-      let last = null;
-      try { last = await env.PORTFOLIO.get("pay:lastSig"); } catch (e) {}
-      if (last !== sig) {
-        await sendWA(env, text);
-        try { await env.PORTFOLIO.put("pay:lastSig", sig, { expirationTtl: 2592000 }); } catch (e) {}
-      }
-    }
+    /* V-13.8: KALICI DÜZELTME — burada "pay:lastSig" ile "metin dünkünden farksızsa gönderme"
+       kontrolü vardı. Bunun önleyeceği bir risk hiç yoktu: dispatch() zaten "ran:pay:<tarih>"
+       damgasıyla bu işi günde TEK SEFER çalıştırıyor — yani aynı gün içinde ikinci bir gönderim
+       ihtimali zaten yok. Tek etkisi, en yakın ödemenin tarihi/tutarı birkaç gün değişmediğinde
+       (ör. 3 günden uzak vadeli tek bir ödeme varken) mesajı GÜNLERCE SESSİZCE atlamaktı — log'da
+       "ok" görünse de WhatsApp'a hiçbir şey gitmiyordu. Günde zaten tek gönderim garantisi
+       olduğu için bu ikinci bariyer tamamen gereksizdi, kaldırıldı. */
+    if (send) await sendWA(env, text);
     return text;
   }
   const L = ["Ödeme Hatırlatma 💳", `${today.slice(8)}.${today.slice(5, 7)}.${today.slice(0, 4)} · bugün ve 3 gün`, ""];
@@ -1654,20 +1653,11 @@ async function buildPayMsg(env, send) {
   }
   if (dates.length > 1) L.push(`Toplam · ${tl(toplam)}`);
   const text = L.join("\n").replace(/\n+$/, "");
-  /* V-11.5: "sürekli aynı mesaj" düzeltmesi.
-     Vadesi 1-3 gün sonra olan kalemler her gün aynı metni üretiyordu. Kural:
-     - bugün vadesi dolan (diff 0) kalem varsa HER ZAMAN gönder,
-     - yoksa ve metin en son gönderilenle birebir aynıysa gönderme. */
-  const hasToday = dates.some(d => buckets[d].diff === 0);
-  let sig = 0; for (let i = 0; i < text.length; i++) { sig = (sig * 31 + text.charCodeAt(i)) | 0; }
-  sig = String(sig);
-  if (send) {
-    let last = null;
-    try { last = await env.PORTFOLIO.get("pay:lastSig"); } catch (e) {}
-    if (!hasToday && last === sig) return "aynı içerik daha önce gönderildi — tekrar gönderilmedi";
-    await sendWA(env, text);
-    try { await env.PORTFOLIO.put("pay:lastSig", sig, { expirationTtl: 2592000 }); } catch (e) {}
-  }
+  /* V-13.8: KALICI DÜZELTME — eskiden V-11.5'te eklenen "metin dünkünden farksızsa gönderme"
+     (pay:lastSig) kuralı kaldırıldı. bkz. yukarıdaki "nearest" dalındaki aynı not: dispatch()
+     zaten bu işi günde TEK SEFER çalıştırıyor, o yüzden içerik bazlı ikinci bir engele hiç
+     gerek yok — yalnızca mesajı günlerce sessizce yutuyordu. */
+  if (send) await sendWA(env, text);
   return text;
 }
 async function weeklyMail(env,send){
@@ -1769,8 +1759,6 @@ async function runLogDump(env, days) {
       if (v) out.push("  " + tk + " · " + stamp + " · " + v.split("\n").join(" | "));
     }
   }
-  let sig = ""; try { sig = (await env.PORTFOLIO.get("pay:lastSig")) || "—"; } catch (e) { sig = "okunamadı"; }
-  out.push("pay:lastSig · " + String(sig).slice(0, 160));
   return out.join("\n");
 }
 async function dispatch(env, job, dry) {
@@ -1820,7 +1808,18 @@ async function dispatch(env, job, dry) {
   for (const [name, fn] of jobs) {
     if (cron && await ranToday(env, name, t.date)) { log.push(name + ":atlandı"); continue; }
     let res;
-    try { await fn(); res = "ok"; if (cron && !dry) await markToday(env, name, t.date); }
+    try {
+      const r = await fn();
+      /* V-13.8: eskiden burada hep düz "ok" yazılıyordu — iş GERÇEKTEN WhatsApp gönderip
+         göndermediğine bakmadan. buildPayMsg gibi fonksiyonlar kendi içinde sessizce
+         "gönderilmedi" dönebiliyordu (bkz. kaldırılan pay:lastSig engeli) ve log bunu da "ok"
+         gösteriyordu — mesaj gelmese bile her şey yolundaymış gibi görünüyordu. Artık işin
+         GERÇEK dönüş metni (kısaltılmış) loglanıyor, böyle bir sessiz atlama tekrar olursa
+         /runlog'da direkt görünür.
+         */
+      res = (typeof r === "string" && r) ? r.replace(/\n/g, " / ").slice(0, 90) : "ok";
+      if (cron && !dry) await markToday(env, name, t.date);
+    }
     catch (e) { res = "HATA " + errStr(e); }
     log.push(name + ":" + res);
     if (!dry) await runLogAdd(env, name + ":" + t.date, hhmm + (one ? " [elle] " : " ") + res, 8);
