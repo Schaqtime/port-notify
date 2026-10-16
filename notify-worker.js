@@ -1,6 +1,8 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.8 (subrequest bütçesi invocation boyunca paylaşılıyor + pay'in
-   mesajı günlerce sessizce yutan gereksiz içerik-dedup'ı kaldırıldı — her iki "mesaj gelmiyor" kökeni de çözüldü)
+   Terminal · BİLDİRİM WORKER  ·  V-13.9 (gece 00:00 snapshot'ındaki (ve /prices, /?test=daily
+   diagnostik uçlarındaki) bütçesiz fetchLivePrices çağrısı kalıcı düzeltildi — büyük portföyde
+   bazı hisseler haftalarca sessizce bayat kalıyordu; artık her gece en az 48 sembole garanti
+   taze fiyat)
    ------------------------------------------------------------
    Veriyi DOĞRUDAN KV'den okur (worker-to-worker HTTP yok).
    "port" (uygulama) ve "portfolio-sync" worker'larına DOKUNMAZ.
@@ -230,7 +232,7 @@ export default {
       try {
         const state = await fetchState(env);
         const keys = (state && state.keys) || {};
-        const rep = await fetchLivePrices(env, keys);
+        const rep = await fetchLivePrices(env, keys, subBudget(48));   // V-13.9: bkz. writeSnapshot
         const ps = (keys.positions || []).filter(p => !p.manual).slice(0, 8)
           .map(p => `${p.t}=${p.price} (${p.day != null ? (p.day > 0 ? "+" : "") + p.day + "%" : "—"})`);
         return txt("PRICES ·\nKripto güncellenen: " + rep.crypto + " · Hisse güncellenen: " + rep.stock +
@@ -471,7 +473,7 @@ async function run(env, kind, send) {
   // V6.2: canlı fiyat — özet/uyarı son sync yerine anlık fiyatla
   let priceRep = null;
   try {
-    priceRep = await fetchLivePrices(env, keys);
+    priceRep = await fetchLivePrices(env, keys, subBudget(48));   // V-13.9: bkz. writeSnapshot
     if (priceRep && (priceRep.crypto + priceRep.stock) > 0) keys.priceUpd = new Date().toISOString();
   } catch (e) { priceRep = { crypto: 0, stock: 0, fail: ["canlı fiyat: " + errStr(e)] }; }
   let text;
@@ -1900,7 +1902,12 @@ async function writeSnapshot(env, dry) {
   const st = await fetchState(env);
   const keys = st.keys || {};
   let rep = null;
-  try { rep = await fetchLivePrices(env, keys); } catch (e) {}
+  /* V-13.9: KALICI DÜZELTME — bu çağrı da (runPushChecks'teki V-13.7 düzeltmesinden önce olduğu
+     gibi) bütçesiz/sınırsızdı. Portföydeki hisse sayısı büyüdükçe TEK BAŞINA Cloudflare'in 50
+     alt-istek sınırını aşıyor, "Too many subrequests" ile düşüyordu — bu da gece 00:00 snapshot'ının
+     fiyatları hiç güncelleyememesi, dolayısıyla paylaşılan KV'deki fiyatların (ve cihaza senkronla
+     inen fiyatların) haftalarca bayat kalması anlamına geliyordu. */
+  try { rep = await fetchLivePrices(env, keys, subBudget(48)); } catch (e) {}
   const date = trShift(-1);                       // 00:00'da yazılan kayıt DÜNÜN kapanışıdır
   const rec = snapshotRecord(keys, date);
   // yaz–oku yarışını daralt: en güncel durumu tekrar oku, yalnız history'ye dokun
