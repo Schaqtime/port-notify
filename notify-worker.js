@@ -1,5 +1,10 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.9 (gece 00:00 snapshot'ındaki (ve /prices, /?test=daily
+   Terminal · BİLDİRİM WORKER  ·  V-13.10 (WhatsApp mesajındaki grup yüzdeleri — "Trade -%95,85"
+   gibi — artık iki günün ham grup TOPLAMI değil, İKİ GÜNDE DE açık olan AYNI sembollerin
+   fiyatları (miktar sabit tutularak) kıyaslanarak hesaplanıyor; eski yöntem bir pozisyon
+   eklenip/çıkarılınca veya kaldıraçlı grubun ham K/Z tabanı sıfıra yaklaşınca anlamsız/ters
+   işaretli yüzdeler üretiyordu — bkz. groupPctBetween, V-13.10 yorumu)
+   V-13.9 (gece 00:00 snapshot'ındaki (ve /prices, /?test=daily
    diagnostik uçlarındaki) bütçesiz fetchLivePrices çağrısı kalıcı düzeltildi — büyük portföyde
    bazı hisseler haftalarca sessizce bayat kalıyordu; artık her gece en az 48 sembole garanti
    taze fiyat)
@@ -2690,7 +2695,31 @@ function termsOfGroup(keys, g) {
   const pref = ["Hodl", "Moonshot"];
   return [...pref.filter(x => set.has(x)), ...[...set].filter(x => !pref.includes(x)).sort()];
 }
+/* V-13.10: KALICI DÜZELTME — eskiden iki günün grup TOPLAMLARI (groups[g].val) doğrudan
+   kıyaslanıyordu. O toplam o günün POZİSYON KÜMESİNE bağlıydı; arada bir pozisyon eklenip/
+   çıkarılırsa (ör. Quantfury'de yeni bir kaldıraçlı işlem açılması) yüzde gerçek fiyat
+   hareketini değil, KÜMENİN DEĞİŞİMİNİ ölçüyordu — "Trade -%95,85" gibi, altındaki tek tek
+   pozisyonların gösterdiği (+3,6%/+1,1%) ile taban tabana zıt, anlamsız sonuçlar buradan
+   geliyordu. Kaldıraçlı (Trade) grubunda ayrıca groups[g].val zaten ham K/Z (kâr/zarar)
+   tutarıydı — payda sıfıra yakınsa küçük bir dolar oynaması bile yüzdede patlıyordu.
+   Artık İKİ GÜNDE DE açık olan AYNI sembollerin fiyatları kıyaslanıyor (miktar ilk günden
+   sabit tutulup yalnız fiyat değişsin diye) — saf, pozisyon ekleme/çıkarmadan etkilenmeyen
+   bir fiyat getirisi. Eski (prices/meta'sız) kayıtlarda eskisi gibi ham toplama düşülür. */
 function groupPctBetween(a, b, g, keysForLive, term) {
+  if (a && b && a.prices && b.prices && a.meta && b.meta && a.qty) {
+    let then = 0, now = 0, found = false;
+    Object.keys(a.meta).forEach(t => {
+      const ma = a.meta[t]; if (!ma || ma.group !== g) return;
+      if (term && termOf(ma) !== term) return;
+      const qa = num(a.qty[t]); if (!(qa > 1e-6)) return;
+      const pa = num(a.prices[t]), pb = num(b.prices[t]);
+      if (!(pa > 0) || !(pb > 0)) return;
+      const mb = b.meta[t], qb = b.qty && num(b.qty[t]);
+      if (!mb || mb.group !== g || (term && termOf(mb) !== term) || !(qb > 1e-6)) return;
+      then += qa * pa; now += qa * pb; found = true;
+    });
+    if (found && then) return (now - then) / then * 100;
+  }
   const x = groupValOf(a, g, term);
   let y = groupValOf(b, g, term);
   if (y == null && keysForLive) y = groupValLive(keysForLive, g, term);   // son uç için canlı değere düş
