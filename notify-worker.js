@@ -1,5 +1,8 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.10 (WhatsApp mesajındaki grup yüzdeleri — "Trade -%95,85"
+   Terminal · BİLDİRİM WORKER  ·  V-13.11 (maskTot: Portföy toplamı artık "(0,123734)" yerine
+   100.000'e bölünüp "(1.23)" biçiminde maskeleniyor — gizleme amacı aynı, görünüm normal bir
+   kısaltma gibi)
+   V-13.10 (WhatsApp mesajındaki grup yüzdeleri — "Trade -%95,85"
    gibi — artık iki günün ham grup TOPLAMI değil, İKİ GÜNDE DE açık olan AYNI sembollerin
    fiyatları (miktar sabit tutularak) kıyaslanarak hesaplanıyor; eski yöntem bir pozisyon
    eklenip/çıkarılınca veya kaldıraçlı grubun ham K/Z tabanı sıfıra yaklaşınca anlamsız/ters
@@ -2740,7 +2743,7 @@ function moversBetween(keys, refDate) {
      *Stocks (Hodl)* - (+3.78%)
      SPX 776.34 ~SPY (-0.20%)
    Tek değerli bölümler (Portföy/Trade) başlıkla aynı satırda kalır. */
-function maskTot(v) { return "(0," + Math.round(num(v)) + ")"; }   // telefonda görene toplam belli olmasın
+function maskTot(v) { return "(" + (Math.trunc(num(v) / 1000) / 100).toFixed(2) + ")"; }   // telefonda görene toplam belli olmasın
 function head(lab, pct, inline) { return `*${lab}* - ${pct}${inline ? " " + inline : ""}`; }
 /* Vekil (ETF) varsa aynı satırda birleşir: "XAG 60.01 ~SLV (+4.47%)". Veri yoksa "K —". */
 function mkRef(k, o, lbl) {
