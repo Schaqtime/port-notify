@@ -1,5 +1,11 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.11 (maskTot: Portföy toplamı artık "(0,123734)" yerine
+   Terminal · BİLDİRİM WORKER  ·  V-13.12 (WhatsApp mesajında bir grubun ("Stocks (Hodl)" gibi)
+   fiyatı o gece HİÇ canlı çekilememişse — Finnhub/TwelveData o sembolde başarısız olmuş, bütçe
+   bitmiş vs. — artık donmuş eski fiyat sanki "bugün değişmedi" gibi %0,00 diye gösterilmiyor;
+   snapshotRecord artık her sembolün fiyatının en son NE ZAMAN canlı çekildiğini (srcAt) de
+   kaydediyor, groupPctBetween o gece gerçekten taze çekilmemiş sembolleri hesaba katmıyor ve
+   grupta tazesi kalmazsa dürüstçe "(—)" yazıyor)
+   V-13.11 (maskTot: Portföy toplamı artık "(0,123734)" yerine
    100.000'e bölünüp "(1.23)" biçiminde maskeleniyor — gizleme amacı aynı, görünüm normal bir
    kısaltma gibi)
    V-13.10 (WhatsApp mesajındaki grup yüzdeleri — "Trade -%95,85"
@@ -1901,6 +1907,7 @@ function snapshotRecord(keys, date) {
     total: +(cash + pos).toFixed(2), cash: +cash.toFixed(2), pos: +pos.toFixed(2), cost: +cst.toFixed(2),
     groups,
     prices: snap(positions, "price"), wprices: snap(watch, "price"), qty: snap(positions, "qty"),
+    srcAt: snap(positions, "srcAt"),   // V-13.12: bu sembolün fiyatı EN SON NE ZAMAN canlı çekildi — bkz. groupPctBetween
     meta: Object.fromEntries(positions.map(p => [p.t, { n: p.n, group: p.group, term: p.term, sec: p.sec, cost: p.cost }])),
     bench: Object.assign({}, keys.bench || {}),
     ts: new Date().toISOString(), src: "worker"
@@ -2707,10 +2714,21 @@ function termsOfGroup(keys, g) {
    tutarıydı — payda sıfıra yakınsa küçük bir dolar oynaması bile yüzdede patlıyordu.
    Artık İKİ GÜNDE DE açık olan AYNI sembollerin fiyatları kıyaslanıyor (miktar ilk günden
    sabit tutulup yalnız fiyat değişsin diye) — saf, pozisyon ekleme/çıkarmadan etkilenmeyen
-   bir fiyat getirisi. Eski (prices/meta'sız) kayıtlarda eskisi gibi ham toplama düşülür. */
+   bir fiyat getirisi. Eski (prices/meta'sız) kayıtlarda eskisi gibi ham toplama düşülür.
+   V-13.12: KALICI DÜZELTME — bir önceki düzeltme "aynı fiyat → %0,00" varsayıyordu, ama fiyat
+   o gece hiç ÇEKİLEMEMİŞ de olabilir (Finnhub/TwelveData o sembolde başarısız olmuş, bütçe
+   bitmiş, vs.) — o zaman b.prices[t] aslında GÜNLER ÖNCESİNDEN donmuş bir rakamdır, "bugün
+   değişmedi" değil "bugün hiç öğrenemedik" demektir. "Stocks (Hodl)/(Moonshot)/Trade - (+0,00%)"
+   diye gösterip SPX/SPY/NDX/QQQ aynı anda gerçek bir hareket göstermesi buradan geliyordu.
+   Artık her sembol için snapshotRecord'un kaydettiği srcAt (o fiyatın EN SON NE ZAMAN canlı
+   çekildiği) kontrol ediliyor — b.srcAt[t], b kaydının KENDİ yazıldığı geceye (b.ts) yakın
+   değilse (yani o gece gerçekten taze çekilmemişse) o sembol HİÇ sayılmaz; grupta tazesi
+   kalmazsa yüzde "(—)" olur, yanıltıcı "(+0,00%)" değil. */
 function groupPctBetween(a, b, g, keysForLive, term) {
   if (a && b && a.prices && b.prices && a.meta && b.meta && a.qty) {
-    let then = 0, now = 0, found = false;
+    const FRESH_MS = 30 * 3600 * 1000;   // b'nin kendi yazıldığı geceden ±30 saat içinde çekilmiş olmalı
+    const bTs = b.ts ? new Date(b.ts).getTime() : NaN;
+    let then = 0, now = 0, found = false, candidate = false;
     Object.keys(a.meta).forEach(t => {
       const ma = a.meta[t]; if (!ma || ma.group !== g) return;
       if (term && termOf(ma) !== term) return;
@@ -2719,9 +2737,15 @@ function groupPctBetween(a, b, g, keysForLive, term) {
       if (!(pa > 0) || !(pb > 0)) return;
       const mb = b.meta[t], qb = b.qty && num(b.qty[t]);
       if (!mb || mb.group !== g || (term && termOf(mb) !== term) || !(qb > 1e-6)) return;
+      candidate = true;   // bu sembol fiyat/miktar açısından kıyaslanabilir — ama taze mi, ayrı kontrol
+      const srcAtB = b.srcAt && num(b.srcAt[t]);
+      if (!isFinite(bTs) || !srcAtB || (bTs - srcAtB) > FRESH_MS) return;   // o gece gerçekten taze çekilmemiş
       then += qa * pa; now += qa * pb; found = true;
     });
     if (found && then) return (now - then) / then * 100;
+    // candidate true ama found false: veri var ama HİÇBİRİ taze değil. Eski ham-toplam yöntemine
+    // düşmek de aynı donmuş fiyatları kullanacağından güvenilmez — "(—)" ile dürüstçe "bilmiyoruz" denir.
+    if (candidate) return null;
   }
   const x = groupValOf(a, g, term);
   let y = groupValOf(b, g, term);
