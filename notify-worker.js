@@ -1,5 +1,9 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.12 (WhatsApp mesajında bir grubun ("Stocks (Hodl)" gibi)
+   Terminal · BİLDİRİM WORKER  ·  V-13.13 (gece snapshot'ındaki Portföy toplamı uygulamanın
+   TOPLAM DEĞER'inden sürekli eksik çıkıyordu — snapshotRecord, uygulamanın grand() hesabında
+   olan exchTradeCash'i (kaldıraçlı marj) hiç toplamıyordu; artık toplama ve Trade grubuna da
+   dahil ediliyor)
+   V-13.12 (WhatsApp mesajında bir grubun ("Stocks (Hodl)" gibi)
    fiyatı o gece HİÇ canlı çekilememişse — Finnhub/TwelveData o sembolde başarısız olmuş, bütçe
    bitmiş vs. — artık donmuş eski fiyat sanki "bugün değişmedi" gibi %0,00 diye gösterilmiyor;
    snapshotRecord artık her sembolün fiyatının en son NE ZAMAN canlı çekildiğini (srcAt) de
@@ -1883,23 +1887,33 @@ async function saveState(env, state) {
 
 /* ---------- GECE ANLIK GÖRÜNTÜSÜ (00:00) ---------- */
 function groupOf(p) { return p.group || (p.cg ? "Crypto" : "Stock"); }
+/* V-13.13: KALICI DÜZELTME — uygulamadaki grand() = cashTotal() + posTotal(), posTotal() de
+   pozisyonların değerine exchTradeCash (kaldıraçlı işlemler için ayrılan marj) EKLİYORDU
+   (bkz. index.html tradeCashTotal/posTotal). Bu worker'daki snapshotRecord ise toplamı yalnız
+   exchCash + pozisyon değeri olarak hesaplıyordu — marj hiç sayılmıyordu. Sonuç: gece
+   snapshot'ındaki (ve dolayısıyla WhatsApp mesajındaki maskeli Portföy tutarı/yüzdesi) toplam,
+   uygulamadaki TOPLAM DEĞER'den marj tutarı kadar sürekli eksik çıkıyordu. Artık exchTradeCash
+   da toplama (ve Trade grubunun val/cost'una, uygulamadaki Trade kutucuğuyla aynı mantıkla)
+   dahil ediliyor. */
 function snapshotRecord(keys, date) {
   const positions = (Array.isArray(keys.positions) ? keys.positions : []).filter(p => p && p.t);
   const watch = Array.isArray(keys.watch) ? keys.watch : [];
   const exchCash = keys.exchCash || {};
+  const tradeCash = Object.values(keys.exchTradeCash || {}).reduce((a, v) => a + num(v), 0);
   const isClosed = p => num(p.qty) <= 1e-6;
   const val = p => p.lev ? num(p.qty) * (num(p.price) - num(p.cost)) : num(p.qty) * num(p.price);
   const cost = p => p.lev ? 0 : num(p.qty) * num(p.cost);
   const open = positions.filter(p => !isClosed(p));
   const cash = Object.values(exchCash).reduce((a, v) => a + num(v), 0);
-  const pos = open.reduce((a, p) => a + val(p), 0);
-  const cst = open.reduce((a, p) => a + cost(p), 0);
+  const pos = open.reduce((a, p) => a + val(p), 0) + tradeCash;
+  const cst = open.reduce((a, p) => a + cost(p), 0) + tradeCash;
   const groups = {};
   ["Stock", "Commodity", "Crypto", "Trade"].forEach(g => {
     const ps = open.filter(p => groupOf(p) === g);
     const terms = {};                                   // V-10.3: strateji kırılımı da kaydedilir
     ps.forEach(p => { const k = termOf(p); terms[k] = +((terms[k] || 0) + val(p)).toFixed(2); });
-    groups[g] = { val: +ps.reduce((a, p) => a + val(p), 0).toFixed(2), cost: +ps.reduce((a, p) => a + cost(p), 0).toFixed(2), terms };
+    const gTradeCash = g === "Trade" ? tradeCash : 0;
+    groups[g] = { val: +(ps.reduce((a, p) => a + val(p), 0) + gTradeCash).toFixed(2), cost: +(ps.reduce((a, p) => a + cost(p), 0) + gTradeCash).toFixed(2), terms };
   });
   const snap = (arr, f) => Object.fromEntries(arr.filter(x => x && x.t && x[f] != null).map(x => [x.t, x[f]]));
   return {
