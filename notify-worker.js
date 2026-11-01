@@ -1,5 +1,9 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.13 (gece snapshot'ındaki Portföy toplamı uygulamanın
+   Terminal · BİLDİRİM WORKER  ·  V-13.14 (haftalık yedek artık mail yerine Google Drive'a
+   yazılıyor — Apps Script Web App'e DRIVE_BACKUP_URL/KEY secret'larıyla POST ediliyor; secret'lar
+   tanımlı değilse yalnız uygulamadaki "Buluttan geri yükle" butonunun kullandığı KV kopyası
+   güncellenir, dışarı hiçbir şey gitmez)
+   V-13.13 (gece snapshot'ındaki Portföy toplamı uygulamanın
    TOPLAM DEĞER'inden sürekli eksik çıkıyordu — snapshotRecord, uygulamanın grand() hesabında
    olan exchTradeCash'i (kaldıraçlı marj) hiç toplamıyordu; artık toplama ve Trade grubuna da
    dahil ediliyor)
@@ -53,7 +57,7 @@ export default {
        06:00     : bilanço (earnings) tarihlerini tazele
        07:30     : sabah WhatsApp özeti (yalnız Pzt–Cum)
        19:00 Paz : haftalık WhatsApp özeti
-       20:00 Cum : haftalık JSON yedek maili (Resend) — Terminal'deki tüm state'in yedeği
+       20:00 Cum : haftalık JSON yedeği — Google Drive'a yazılır (V-13.14, bkz. weeklyBackup) — Terminal'deki tüm state'in yedeği
      Eski cron'lar (0 16 * * *, 0 16 * * SUN) dursa da zararsız; dağıtıcı yine saate bakar. */
   async scheduled(event, env, ctx) {
     ctx.waitUntil(dispatch(env).catch(()=>{}));
@@ -90,8 +94,8 @@ export default {
            Hepsini birden zorlamak Cloudflare'in çağrı başına 50 subrequest sınırını aşıyordu. */
         if (url.pathname === "/dispatch") return txt("DISPATCH · " + await dispatch(env, url.searchParams.get("job") || "", dry));
         if (url.pathname === "/runlog")   return txt("RUNLOG\n" + await runLogDump(env, +(url.searchParams.get("days") || 3)));
-        /* V-1.1: uygulamadaki "Buluttan geri yükle" butonu — en son haftalık mail yedeğinin
-           (weeklyMail'in KV'ye yazdığı dondurulmuş kopyanın) aynısını JSON olarak döner. */
+        /* V-1.1: uygulamadaki "Buluttan geri yükle" butonu — en son haftalık yedeğin
+           (weeklyBackup'ın KV'ye yazdığı dondurulmuş kopyanın) aynısını JSON olarak döner. */
         if (url.pathname === "/mailbackup") {
           const raw = env.PORTFOLIO ? await env.PORTFOLIO.get("mailbackup") : null;
           if (!raw) return txt(JSON.stringify({ error: "Henüz kaydedilmiş mail yedeği yok" }), 404, "application/json");
@@ -231,7 +235,7 @@ export default {
         if (url.pathname === "/unsubscribe") { const b = await request.json().catch(()=>({})); await pushSubRemove(env, b.endpoint); return txt("OK · abonelik silindi"); }
         if (url.pathname === "/pushtest") { const n = await sendPushAll(env, { title: "Terminal · Test", body: "Push çalışıyor ✅", tag: "test", url: "/" }); return txt("OK · " + n + " cihaza gönderildi"); }
         if (url.pathname === "/pushcheck") { const r = await runPushChecks(env); return txt("PUSH CHECK ·\n" + r); }
-        if (url.pathname === "/mailtest") { const r = await weeklyMail(env, true); return txt("MAIL · " + r); }
+        if (url.pathname === "/mailtest") { const r = await weeklyBackup(env, true); return txt("BACKUP · " + r); }
       } catch (e) { return txt("HATA [" + url.pathname.slice(1).toUpperCase() + "]: " + errStr(e), 500); }
     }
     const test = url.searchParams.get("test");
@@ -1680,11 +1684,12 @@ async function buildPayMsg(env, send) {
   if (send) await sendWA(env, text);
   return text;
 }
-async function weeklyMail(env,send){
-  if(!env.RESEND_KEY) return "RESEND_KEY yok — mail atlandı";
+/* V-13.14: Haftalık yedek artık MAIL yerine Şakir'in kendi Google Drive'ındaki sabit bir
+   dosyaya yazılıyor (Apps Script Web App üzerinden — bkz. kurulum notları). Resend/mail tamamen
+   kaldırılmadı, DRIVE_BACKUP_URL/KEY tanımlı değilse yalnız KV'deki "mailbackup" kopyası (uygulamadaki
+   "Buluttan geri yükle" butonu için) güncellenir, dışarı hiçbir şey gönderilmez. */
+async function weeklyBackup(env,send){
   const state=await fetchState(env);
-  const json=JSON.stringify(state,null,2);
-  const b64=btoa(unescape(encodeURIComponent(json)));
   const d=new Date().toLocaleDateString("tr-TR",{timeZone:"Europe/Istanbul"});
   // Uygulamanın "İçe aktar (JSON)" düğmesinin beklediği düz biçim — V-1.59: bu liste Terminal'deki
   // SYNC_KEYS ile BİREBİR aynı tutulmalı (settings hariç, o ayrıca taşınır). Daha önce theme/wstate/
@@ -1697,31 +1702,22 @@ async function weeklyMail(env,send){
     "finPay","finSub","finAlloc","finOver","finMon","theme","wstate","wClosedTerm","collapsed","ledgerCols"];
   const flat={settings:k.settings||{},exportedAt:new Date().toISOString()};
   BACKUP_KEYS.forEach(key=>{flat[key]=k[key];});
-  const b64imp=btoa(unescape(encodeURIComponent(JSON.stringify(flat,null,2))));
-  const from=env.MAIL_FROM || "Terminal <onboarding@resend.dev>";
-  const body={
-    from, to:["sakir.unveren@gmail.com"],
-    subject:"Terminal · Haftalık yedek ("+d+")",
-    text:"Terminal portföy JSON yedeği ektedir. Tarih: "+d+"\nAnahtar sayısı: "+(state&&state.keys?Object.keys(state.keys).length:0)+
-         "\n\nİki ek var:\n· terminal-…json — bulut/sync ham yedeği (dışa aktar)\n· terminal-import-…json — uygulamada \"İçe aktar (JSON)\" ile geri yüklenir",
-    attachments:[
-      { filename:"terminal-"+d.replace(/\./g,"-")+".json", content:b64 },
-      { filename:"terminal-import-"+d.replace(/\./g,"-")+".json", content:b64imp }
-    ]
-  };
-  if(!send) return "dry-run ok — gönderilmedi ("+d+", "+Object.keys(k).length+" anahtar)";
-  const r=await fetch("https://api.resend.com/emails",{
+  const flatJson=JSON.stringify(flat,null,2);
+  // V-1.1: uygulamadaki "Buluttan geri yükle" butonu için dondurulmuş kopya — Drive'dan bağımsız,
+  // her zaman yazılır (tek tıkla geri yükleme bu düzeltmeyle de çalışmaya devam etsin diye).
+  try{ if(env.PORTFOLIO) await env.PORTFOLIO.put("mailbackup", JSON.stringify({savedAt:new Date().toISOString(), flat})); }catch(e){}
+  if(!env.DRIVE_BACKUP_URL || !env.DRIVE_BACKUP_KEY) return "DRIVE_BACKUP_URL/KEY yok — yalnız KV'deki yedek güncellendi ("+d+")";
+  if(!send) return "dry-run ok — Drive'a gönderilmedi ("+d+", "+Object.keys(k).length+" anahtar)";
+  const r=await fetch(env.DRIVE_BACKUP_URL+(env.DRIVE_BACKUP_URL.includes("?")?"&":"?")+"key="+encodeURIComponent(env.DRIVE_BACKUP_KEY),{
     method:"POST",
-    headers:{ "Authorization":"Bearer "+env.RESEND_KEY, "Content-Type":"application/json" },
-    body:JSON.stringify(body)
+    headers:{ "Content-Type":"application/json" },
+    body:flatJson
   });
   const t=await r.text();
-  if(!r.ok) throw new Error("Resend "+r.status+": "+t.slice(0,200));
-  // V-1.1: mail gönderilen ANLIK yedek, uygulamadaki "Buluttan geri yükle" butonu için KV'ye de
-  // yazılıyor — böylece kullanıcı Gmail'e girip eki indirip elle içe aktarmadan, tek tıkla bu
-  // dondurulmuş (Cuma'daki) kopyayı geri yükleyebiliyor.
-  try{ if(env.PORTFOLIO) await env.PORTFOLIO.put("mailbackup", JSON.stringify({savedAt:new Date().toISOString(), flat})); }catch(e){}
-  return "gönderildi ("+d+")";
+  if(!r.ok) throw new Error("Drive yedek "+r.status+": "+t.slice(0,200));
+  let j=null; try{ j=JSON.parse(t); }catch(e){}
+  if(j && j.ok===false) throw new Error("Drive yedek reddetti: "+(j.error||t.slice(0,200)));
+  return "Drive'a yazıldı ("+d+", "+Object.keys(k).length+" anahtar)";
 }
 
 /* ============================================================
@@ -1764,7 +1760,7 @@ async function runLogAdd(env, key, line, keep) {
 /* V-13.2: /runlog — son günlerin cron koşumları ve iş sonuçları (teşhis). */
 async function runLogDump(env, days) {
   const d = Math.max(1, Math.min(7, days || 3));
-  const tasks = ["push", "snapshot", "earnings", "morning", "weekly", "pay", "mail"];
+  const tasks = ["push", "snapshot", "earnings", "morning", "weekly", "pay", "backup"];
   const out = [];
   for (let i = 0; i < d; i++) {
     const date = trShift(-i);
@@ -1823,7 +1819,7 @@ async function dispatch(env, job, dry) {
   if (!one && t.dow >= 1 && t.dow <= 5 && t.hh >= 8 && t.hh < 12) jobs.push(["morning", () => buildMorning(env, send, shared)]);
   if (want("weekly") || (!one && t.hh === 19 && t.dow === 0)) jobs.push(["weekly", () => buildWeeklyMsg(env, send, shared)]);
   if (want("pay") || (!one && t.hh === 9)) jobs.push(["pay", () => buildPayMsg(env, send)]);   // V-13.2: pencere 09:00-09:59 (cron gecikince 15 dk'lık pencere kaçıyordu; günde bir kez garantisini "ran:" damgası veriyor)
-  if (want("mail") || (!one && t.hh === 20 && t.dow === 5)) jobs.push(["mail", () => weeklyMail(env, send)]);   // V-1.1: haftalık JSON yedeği maili — önceden yalnız /mailtest ile elle tetikleniyordu, cron'a hiç bağlanmamıştı
+  if (want("backup") || (!one && t.hh === 20 && t.dow === 5)) jobs.push(["backup", () => weeklyBackup(env, send)]);   // V-1.1: haftalık JSON yedeği — önceden yalnız /mailtest ile elle tetikleniyordu, cron'a hiç bağlanmamıştı; V-13.14: artık mail değil Drive'a
   if (one && !jobs.length && one !== "push") log.push("bilinmeyen job: " + one);
   for (const [name, fn] of jobs) {
     if (cron && await ranToday(env, name, t.date)) { log.push(name + ":atlandı"); continue; }
