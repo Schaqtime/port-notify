@@ -1,5 +1,11 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.14 (haftalık yedek artık mail yerine Google Drive'a
+   Terminal · BİLDİRİM WORKER  ·  V-13.15 (mesajın en üstündeki "Portföy" günlük/haftalık yüzdesi
+   de — tıpkı V-13.10'daki grup yüzdeleri gibi — iki günün ham .total'ını (cash+pozisyon+marj)
+   kıyaslıyordu; marj iki gün arasında eklenip/çıkarılınca "Portföy +%24,49" gibi altındaki hiçbir
+   pozisyonun açıklayamayacağı şişkin yüzdeler üretiyordu. Artık groupPctBetween'le aynı mantık —
+   aynı sembollerin fiyatları, miktar sabit, taze-mi kontrolüyle — grup filtresi olmadan tüm
+   pozisyonlara uygulanıyor, bkz. portfolioPctBetween)
+   V-13.14 (haftalık yedek artık mail yerine Google Drive'a
    yazılıyor — Apps Script Web App'e DRIVE_BACKUP_URL/KEY secret'larıyla POST ediliyor; secret'lar
    tanımlı değilse yalnız uygulamadaki "Buluttan geri yükle" butonunun kullandığı KV kopyası
    güncellenir, dışarı hiçbir şey gitmez)
@@ -2763,6 +2769,39 @@ function groupPctBetween(a, b, g, keysForLive, term) {
   if (x == null || y == null || !x) return null;
   return (y - x) / x * 100;
 }
+/* V-13.15: KALICI DÜZELTME — mesajın en üstündeki "Portföy" günlük/haftalık yüzdesi groupPctBetween'den
+   ÖNCE düzeltilmemişti: iki günün .total alanını (cash+pozisyon+marj) doğrudan kıyaslıyordu. Marj
+   (exchTradeCash) iki gün arasında eklenip/çıkarılırsa (ör. kullanıcı bir borsaya elle marj girdiğinde,
+   ya da V-13.13'teki marj düzeltmesinden sonra bir borsayı düzeltince) bu gerçek bir fiyat hareketi
+   değil, SERMAYE GİRİŞİ/ÇIKIŞIdır — ama ham toplam farkı bunu da "kâr" sayıp "Portföy +%24,49" gibi
+   altındaki hiçbir pozisyonun (en yükseği +%14) açıklayamayacağı şişkin bir yüzde üretiyordu —
+   tıpkı V-13.10'dan önceki grup yüzdeleri gibi. Artık groupPctBetween'le AYNI mantık (iki günde de
+   açık olan aynı sembollerin fiyatları, miktar sabit, taze-mi kontrolüyle) grup filtresi OLMADAN
+   tüm pozisyonlara uygulanıyor — sermaye giriş/çıkışından etkilenmeyen saf fiyat getirisi. */
+function portfolioPctBetween(a, b) {
+  if (a && b && a.prices && b.prices && a.meta && b.meta && a.qty) {
+    const FRESH_MS = 30 * 3600 * 1000;
+    const bTs = b.ts ? new Date(b.ts).getTime() : NaN;
+    let then = 0, now = 0, found = false, candidate = false;
+    Object.keys(a.meta).forEach(t => {
+      const ma = a.meta[t]; if (!ma) return;
+      const qa = num(a.qty[t]); if (!(qa > 1e-6)) return;
+      const pa = num(a.prices[t]), pb = num(b.prices[t]);
+      if (!(pa > 0) || !(pb > 0)) return;
+      const mb = b.meta[t], qb = b.qty && num(b.qty[t]);
+      if (!mb || !(qb > 1e-6)) return;
+      candidate = true;
+      const srcAtB = b.srcAt && num(b.srcAt[t]);
+      if (!isFinite(bTs) || !srcAtB || (bTs - srcAtB) > FRESH_MS) return;
+      then += qa * pa; now += qa * pb; found = true;
+    });
+    if (found && then) return (now - then) / then * 100;
+    if (candidate) return null;
+  }
+  const x = num(a && a.total), y = num(b && b.total);
+  if (!a || !b || !x) return null;
+  return (y - x) / x * 100;
+}
 function moversBetween(keys, refDate) {
   const ref = recAt(keys, refDate);
   const positions = (keys.positions || []).filter(p => p && p.t && num(p.qty) > 1e-6);
@@ -2815,7 +2854,8 @@ async function buildMorning(env, send, shared) {
   const s = computeSummary(keys);
   const today = trShift(0), yest = trShift(-1);
   const recY = recAt(keys, yest), recP = recAt(keys, trShift(-2));
-  const dayPct = (recY && recP && num(recP.total)) ? (num(recY.total) - num(recP.total)) / num(recP.total) * 100 : s.todayPLp;
+  const dpc = (recY && recP) ? portfolioPctBetween(recP, recY) : null;
+  const dayPct = dpc != null ? dpc : s.todayPLp;
   const gp = g => { const v = groupPctBetween(recP, recY, g, keys); return v == null ? "(—)" : "(" + sg(v, 2) + "%)"; };
   const gpT = (g, tm) => { const v = groupPctBetween(recP, recY, g, keys, tm || undefined); return v == null ? "(—)" : "(" + sg(v, 2) + "%)"; };
   const openPos = (keys.positions || []).filter(p => num(p.qty) > 1e-6);
@@ -2926,7 +2966,8 @@ async function buildWeeklyMsg(env, send, shared) {
   const s = computeSummary(keys);
   const w0 = trShift(-7), today = trShift(0);
   const recNow = recAt(keys, today), recW = recAt(keys, w0);
-  const weekPct = (recNow && recW && num(recW.total)) ? (num(recNow.total) - num(recW.total)) / num(recW.total) * 100 : (s.lb7 ? s.lb7.pct : 0);
+  const wpc = (recNow && recW) ? portfolioPctBetween(recW, recNow) : null;
+  const weekPct = wpc != null ? wpc : (s.lb7 ? s.lb7.pct : 0);
   const gp = g => { const v = groupPctBetween(recW, recNow, g, keys); return v == null ? "(—)" : "(" + sg(v, 2) + "%)"; };
   const gpT = (g, tm) => { const v = groupPctBetween(recW, recNow, g, keys, tm || undefined); return v == null ? "(—)" : "(" + sg(v, 2) + "%)"; };
   const mv = moversBetween(keys, w0) || [];
