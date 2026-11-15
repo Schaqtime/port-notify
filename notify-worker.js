@@ -1,5 +1,6 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.17 (haber push'u kaldırıldı; ödeme bildirimi önce ve
+   Terminal · BİLDİRİM WORKER  ·  V-13.18 (/proxy: uygulamanın CORS yedeği, allorigins yerine)
+   V-13.17 (haber push'u kaldırıldı; ödeme bildirimi önce ve
    günlük sınırdan muaf; teslim edilemeyen bildirim yeniden denenir; ödeme/haftalık WhatsApp'a
    yeniden deneme penceresi; çok parçalı mesajda gönderilen parça tekrar gitmez; işler arası
    bekleme; tek yetki fonksiyonu)
@@ -134,6 +135,22 @@ export default {
       try { return await aiProxy(env, request, url); }
       catch (e) { return txt(JSON.stringify({ error: errStr(e) }), 200, "application/json; charset=utf-8"); }
     }
+    /* V-13.18 (denetim #28): uygulamanın CORS yedeği — eskiden üçüncü taraf allorigins.win
+       kullanılıyordu ve API anahtarları (Telegram token, Alpha Vantage) oradan geçiyordu.
+       Yalnız izinli alan adlarına GET, anahtar korumalı, 20 sn zaman aşımı. */
+    if (url.pathname === "/proxy") {
+      if (!authOk(env, url)) return txt("unauthorized", 401);
+      let target;
+      try { target = new URL(url.searchParams.get("url") || ""); } catch (e) { return txt("geçersiz url", 400); }
+      if (target.protocol !== "https:" || !PROXY_HOSTS.has(target.hostname)) return txt("izin verilmeyen alan adı", 403);
+      try {
+        const r = await fetch(target.toString(), { headers: ua(), signal: AbortSignal.timeout(20000) });
+        return new Response(await r.text(), { status: r.status, headers: {
+          "Content-Type": r.headers.get("Content-Type") || "application/json",
+          "Access-Control-Allow-Origin": "*"
+        } });
+      } catch (e) { return txt(JSON.stringify({ error: errStr(e) }), 502, "application/json"); }
+    }
 
     /* V-11.9: ENDEKS DAHİL ETME ARBİTRAJI — S&P 500'e girme adayları (FMP stable). */
     if (url.pathname === "/index") {
@@ -267,6 +284,7 @@ export default {
   }
 };
 
+const PROXY_HOSTS = new Set(["api.telegram.org", "www.alphavantage.co", "api.stlouisfed.org"]);
 /* V-13.17 (denetim #33): aynı anahtar kontrolü 10 uçta kopyalanmıştı — tek yerde toplandı. */
 function authOk(env, url) {
   const exp = env.TEST_KEY || env.SYNC_PW || "";
