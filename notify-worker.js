@@ -1,5 +1,6 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.15 (mesajın en üstündeki "Portföy" günlük/haftalık yüzdesi
+   Terminal · BİLDİRİM WORKER  ·  V-13.16 (haftalık yedek artık buluttaki TÜM anahtarları kapsıyor)
+   V-13.15 (mesajın en üstündeki "Portföy" günlük/haftalık yüzdesi
    de — tıpkı V-13.10'daki grup yüzdeleri gibi — iki günün ham .total'ını (cash+pozisyon+marj)
    kıyaslıyordu; marj iki gün arasında eklenip/çıkarılınca "Portföy +%24,49" gibi altındaki hiçbir
    pozisyonun açıklayamayacağı şişkin yüzdeler üretiyordu. Artık groupPctBetween'le aynı mantık —
@@ -1703,11 +1704,13 @@ async function weeklyBackup(env,send){
   // "settings" (startCap/budgets/anchors dahil) uygulama tarafında hiç buluta gitmiyordu — o da düzeltildi,
   // bu yüzden k.settings artık gerçekten dolu gelecek (önceki senkronlardan kalma boş kopyalar hariç).
   const k=(state&&state.keys)||{};
-  const BACKUP_KEYS=["positions","watch","tx","history","notes","priceUpd","closed","closedTerm","gstate",
-    "exchCash","exchOpen","exchList","channels","watchedVideos","twAccounts","tgChannels","videos",
-    "finPay","finSub","finAlloc","finOver","finMon","theme","wstate","wClosedTerm","collapsed","ledgerCols"];
+  /* V-13.16 (denetim #2): elle tutulan BACKUP_KEYS listesi Terminal'in SYNC_KEYS'inin gerisinde
+     kalmıştı — txArchive, exchTradeCash, posOrder, ledgerGroupOrder yedeğe hiç girmiyordu. Artık
+     liste yok: uygulamanın buluta gönderdiği HER anahtar yedeğe giriyor, yeni bir alan eklenince
+     yedek kendiliğinden kapsıyor. Yalnız apiKeys atlanıyor (aynı değerler zaten settings içinde). */
+  const BACKUP_SKIP={apiKeys:1};
   const flat={settings:k.settings||{},exportedAt:new Date().toISOString()};
-  BACKUP_KEYS.forEach(key=>{flat[key]=k[key];});
+  Object.keys(k).forEach(key=>{ if(!BACKUP_SKIP[key] && key!=="settings") flat[key]=k[key]; });
   const flatJson=JSON.stringify(flat,null,2);
   // V-1.1: uygulamadaki "Buluttan geri yükle" butonu için dondurulmuş kopya — Drive'dan bağımsız,
   // her zaman yazılır (tek tıkla geri yükleme bu düzeltmeyle de çalışmaya devam etsin diye).
