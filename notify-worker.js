@@ -1,5 +1,6 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.18 (/proxy: uygulamanın CORS yedeği, allorigins yerine)
+   Terminal · BİLDİRİM WORKER  ·  V-13.19 (AI yorumu claude-opus-5-5, eski model kimlikleri çevrilir)
+   V-13.18 (/proxy: uygulamanın CORS yedeği, allorigins yerine)
    V-13.17 (haber push'u kaldırıldı; ödeme bildirimi önce ve
    günlük sınırdan muaf; teslim edilemeyen bildirim yeniden denenir; ödeme/haftalık WhatsApp'a
    yeniden deneme penceresi; çok parçalı mesajda gönderilen parça tekrar gitmez; işler arası
@@ -1417,7 +1418,7 @@ async function aiProxy(env, request, url) {
     try { payload = await request.text(); } catch (e) { return txt(JSON.stringify({ error: "gövde okunamadı: " + errStr(e) }), 200, "application/json; charset=utf-8"); }
     if (!payload || !payload.trim()) return txt(JSON.stringify({ error: "boş gövde" }), 200, "application/json; charset=utf-8");
   } else if (url.searchParams.get("diag") === "1") {
-    payload = JSON.stringify({ model: url.searchParams.get("model") || "claude-sonnet-4-5", max_tokens: 16, messages: [{ role: "user", content: "ping" }] });
+    payload = JSON.stringify({ model: url.searchParams.get("model") || "claude-sonnet-5-5", max_tokens: 1024, messages: [{ role: "user", content: "ping" }] });
   } else return txt(JSON.stringify({ error: "POST bekleniyor (yoklama için ?diag=1)" }), 200, "application/json; charset=utf-8");
 
   let r, body = "";
@@ -2631,7 +2632,12 @@ async function aiParagraph(env, keys, facts, kind, budget) {
   const key = apiKeyOf(env, keys, "apiKey");
   if (!key) return "";
   if (budget && !budget.take()) return "";   // V-13.3: subrequest bütçesi biterse AI yorumu atlanır, mesajın çekirdeği yine gider
-  const model = ((keys.apiKeys && keys.apiKeys.aiModelPro) || "claude-opus-5") + "";
+  /* V-13.19 (denetim #34): varsayılan claude-opus-5-5. Eski kimlikler yeni nesle çevrilir.
+     Opus 5.5'te düşünme kapatılamaz ve max_tokens'tan pay alır — kısa yorum için efor "low",
+     max_tokens 400 → 2000 (yoksa yorum düşünme sırasında kesilebiliyor). */
+  const MODEL_UP = { "claude-opus-5": "claude-opus-5-5", "claude-sonnet-5": "claude-sonnet-5-5", "claude-sonnet-4-6": "claude-sonnet-5-5" };
+  let model = ((keys.apiKeys && keys.apiKeys.aiModelPro) || "claude-opus-5-5") + "";
+  model = MODEL_UP[model] || model;
   const system = "Türkçe yaz. Sana JSON içinde verilmeyen hiçbir bilgiyi (haber, sebep, olay) UYDURMA — emin olmadığın ya da veri yetersizse o kısmı atla ya da kısa geç; boş/kısa kalması uydurmaktan iyidir. Metninde RAKAM/SAYI/YÜZDE YAZMA — sayılar mesajın üst kısmında zaten var; sen yalnızca verilen sayılardan çıkardığın NİTEL yorumu yaz ('geniş tabanlı bir gerileme', 'birkaç isme bağlı sınırlı bir yükseliş', 'son bir aylık eğilimin tersine döndü' gibi). Sembol adları yazılabilir. Yatırım tavsiyesi verme. Süslü başlık, madde işareti, markdown kullanma — düz metin, en fazla 4 kısa cümle.";
   /* V-11.0: zaman kayması düzeltmesi — performans verisi DÜNÜN kapanışına ait, bugüne dair
      yalnız takvim (earnings/makro) bilgisi var. Etiketler facts içinde de tarihli veriliyor.
@@ -2645,7 +2651,7 @@ async function aiParagraph(env, keys, facts, kind, budget) {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model, max_tokens: 400, system, messages: [{ role: "user", content: user }] })
+      body: JSON.stringify({ model, max_tokens: 2000, output_config: { effort: "low" }, system, messages: [{ role: "user", content: user }] })
     });
     if (!r.ok) return "";
     const j = await r.json();
