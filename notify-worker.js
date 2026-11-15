@@ -1,5 +1,9 @@
 /* ============================================================
-   Terminal · BİLDİRİM WORKER  ·  V-13.16 (haftalık yedek artık buluttaki TÜM anahtarları kapsıyor)
+   Terminal · BİLDİRİM WORKER  ·  V-13.17 (haber push'u kaldırıldı; ödeme bildirimi önce ve
+   günlük sınırdan muaf; teslim edilemeyen bildirim yeniden denenir; ödeme/haftalık WhatsApp'a
+   yeniden deneme penceresi; çok parçalı mesajda gönderilen parça tekrar gitmez; işler arası
+   bekleme; tek yetki fonksiyonu)
+   V-13.16 (haftalık yedek artık buluttaki TÜM anahtarları kapsıyor)
    V-13.15 (mesajın en üstündeki "Portföy" günlük/haftalık yüzdesi
    de — tıpkı V-13.10'daki grup yüzdeleri gibi — iki günün ham .total'ını (cash+pozisyon+marj)
    kıyaslıyordu; marj iki gün arasında eklenip/çıkarılınca "Portföy +%24,49" gibi altındaki hiçbir
@@ -44,26 +48,27 @@
    3) Settings → Variables and Secrets → Add → Secret:
         WA_PHONE   = numaran, ülke koduyla, + ve boşluksuz (ör. 905321234567)
         WA_APIKEY  = CallMeBot apikey'in
-        TEST_KEY   = test parolan (ör. port2026)
+        TEST_KEY   = uzun, rastgele bir anahtar (tahmin edilemeyecek)
       (KV kullanınca SYNC_URL / SYNC_PW GEREKMEZ. İstersen HTTP yedeği için
        yine de ekleyebilirsin — KV yoksa ona düşer.)
    4) Deploy. Triggers → Cron: her 30 dakikada bir, TEK cron yeter (yildiz/30 bosluk yildiz x4) —
       bkz. wrangler.toml [triggers].crons; sabah/haftalık mesaj mm>=30 şartına göre tetiklenir.
 
    TEST:
-     Ham teşhis (veri kaynağını gösterir):  /?probe=1&key=port2026
-     Sadece göster (WA'ya göndermez):        /?debug=daily&key=port2026
-     Gerçek gönderim:                        /?test=daily&key=port2026
+     Ham teşhis (veri kaynağını gösterir):  /?probe=1&key=<TEST_KEY>
+     Sadece göster (WA'ya göndermez):        /?debug=daily&key=<TEST_KEY>
+     Gerçek gönderim:                        /?test=daily&key=<TEST_KEY>
    ============================================================ */
 
 export default {
-  /* V-9.9: TEK cron yeter — her 15 dakikada bir. Hangi işin sırası geldiğine İstanbul saatine
-     bakarak burada karar veriyoruz (cron sayısı sınırına takılmamak için birleştirildi).
-       her 15 dk : fiyat/uyarı kontrolü
+  /* V-9.9: TEK cron yeter — her 30 dakikada bir (wrangler.toml). Hangi işin sırası geldiğine
+     İstanbul saatine bakarak dispatch() karar veriyor (cron sayısı sınırına takılmamak için).
+       her 30 dk : fiyat/uyarı kontrolü (push)
        00:00     : gece anlık görüntüsü (snapshot) — uygulamayı açmasan da kayıt oluşur
-       06:00     : bilanço (earnings) tarihlerini tazele
-       07:30     : sabah WhatsApp özeti (yalnız Pzt–Cum)
-       19:00 Paz : haftalık WhatsApp özeti
+       05:00     : Tema Pano taraması · 06:00 : bilanço (earnings) tarihlerini tazele
+       07:00     : sabah WhatsApp özeti (Pzt–Cum; kaçarsa 12:00'ye kadar yeniden denenir)
+       09:00     : ödeme WhatsApp özeti (kaçarsa 12:00'ye kadar yeniden denenir)
+       19:00 Paz : haftalık WhatsApp özeti (kaçarsa 22:00'ye kadar yeniden denenir)
        20:00 Cum : haftalık JSON yedeği — Google Drive'a yazılır (V-13.14, bkz. weeklyBackup) — Terminal'deki tüm state'in yedeği
      Eski cron'lar (0 16 * * *, 0 16 * * SUN) dursa da zararsız; dağıtıcı yine saate bakar. */
   async scheduled(event, env, ctx) {
@@ -86,9 +91,7 @@ export default {
        Anahtar KV'deki senkron durumundan (apiKeys.fred) okunur; URL'de anahtar taşınmaz. */
     /* V-9.9: elle tetikleme uçları — /snapshot, /earnings, /morning, /weekly (hepsi key korumalı) */
     if (url.pathname === "/snapshot" || url.pathname === "/earnings" || url.pathname === "/morning" || url.pathname === "/weekly" || url.pathname === "/pay" || url.pathname === "/dispatch" || url.pathname === "/runlog" || url.pathname === "/mailbackup") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       const dry = url.searchParams.get("dry") === "1";
       try {
         if (url.pathname === "/snapshot") return txt("SNAPSHOT · " + await writeSnapshot(env, dry));
@@ -121,26 +124,20 @@ export default {
        ?syms=A,B → yalnız o sembolleri getirir · ?scan=1 → days-to-cover eşiğini geçenleri tarar.
        Anahtar gerektirmeyen açık uçtur; FINRA kimlik isterse hata metni olduğu gibi görünür. */
     if (url.pathname === "/short") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       try { return txt(JSON.stringify(await finraShort(env, url.searchParams)), 200, "application/json; charset=utf-8"); }
       catch (e) { return txt(JSON.stringify({ error: errStr(e) }), 200, "application/json; charset=utf-8"); }
     }
     /* V-12.4: AI PROXY — tarayıcı doğrudan Anthropic'e gidemiyor (NetworkError). */
     if (url.pathname === "/ai") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       try { return await aiProxy(env, request, url); }
       catch (e) { return txt(JSON.stringify({ error: errStr(e) }), 200, "application/json; charset=utf-8"); }
     }
 
     /* V-11.9: ENDEKS DAHİL ETME ARBİTRAJI — S&P 500'e girme adayları (FMP stable). */
     if (url.pathname === "/index") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       try { return txt(JSON.stringify(await idxScan(env, url.searchParams)), 200, "application/json; charset=utf-8"); }
       catch (e) { return txt(JSON.stringify({ ok: false, error: errStr(e) }), 200, "application/json; charset=utf-8"); }
     }
@@ -148,9 +145,7 @@ export default {
        TwelveData yanıtlarını gösterir · parametresiz çağrı 20 saatten taze önbellek varsa onu
        döner, yoksa tazeler (frontend'in normal açılışı budur, ağır tarama gereksiz tekrarlanmaz). */
     if (url.pathname === "/themes") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       try {
         if (url.searchParams.get("diag") === "1") return txt(JSON.stringify(await themeScan(env, { diag: true })), 200, "application/json; charset=utf-8");
         if (url.searchParams.get("cached") === "1") {
@@ -171,9 +166,7 @@ export default {
       } catch (e) { return txt(JSON.stringify({ ok: false, error: errStr(e) }), 200, "application/json; charset=utf-8"); }
     }
     if (url.pathname === "/insider") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       try {
         if (url.searchParams.get("diag") === "1") {
           /* Neden boş döndüğünü göstermek için: ham durum, kaç sembol eşleşti, örnek. */
@@ -197,9 +190,7 @@ export default {
       } catch (e) { return txt(JSON.stringify({ error: errStr(e) }), 500, "application/json"); }
     }
     if (url.pathname === "/maccal") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       const days = Math.min(120, Math.max(7, parseInt(url.searchParams.get("days") || "45", 10) || 45));
       const back = Math.min(30, Math.max(0, parseInt(url.searchParams.get("back") || "0", 10) || 0));
       try {
@@ -212,9 +203,7 @@ export default {
       } catch (e) { return txt(JSON.stringify({ error: errStr(e) }), 500, "application/json"); }
     }
     if (url.pathname === "/fred") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       const series = (url.searchParams.get("series") || "").replace(/[^A-Za-z0-9_]/g, "");
       if (!series) return txt("series gerekli", 400);
       try {
@@ -234,9 +223,7 @@ export default {
     }
     // V6.2: Native Web Push rotaları (path bazlı, key korumalı)
     if (url.pathname === "/subscribe" || url.pathname === "/unsubscribe" || url.pathname === "/pushtest" || url.pathname === "/pushcheck" || url.pathname === "/mailtest") {
-      const k = url.searchParams.get("key") || "";
-      const exp = env.TEST_KEY || env.SYNC_PW || "";
-      if (!exp || k !== exp) return txt("unauthorized", 401);
+      if (!authOk(env, url)) return txt("unauthorized", 401);
       try {
         if (url.pathname === "/subscribe") { const sub = await request.json(); await pushSubStore(env, sub); return txt("OK · abone kaydedildi"); }
         if (url.pathname === "/unsubscribe") { const b = await request.json().catch(()=>({})); await pushSubRemove(env, b.endpoint); return txt("OK · abonelik silindi"); }
@@ -252,9 +239,7 @@ export default {
     if (!test && !debug && !probe && !prices)
       return txt("port-notify · canlı.\nTeşhis: /?probe=1&key=...\nFiyat testi: /?prices=1&key=...\nGöster: /?debug=daily&key=...\nGönder: /?test=daily&key=...");
 
-    const key = url.searchParams.get("key") || "";
-    const expected = env.TEST_KEY || env.SYNC_PW || "";
-    if (!expected || key !== expected) return txt("unauthorized (TEST_KEY yanlış/eksik)", 401);
+    if (!authOk(env, url)) return txt("unauthorized (TEST_KEY yanlış/eksik)", 401);
 
     if (probe) return txt(await probeText(env));
     if (prices) {
@@ -282,6 +267,11 @@ export default {
   }
 };
 
+/* V-13.17 (denetim #33): aynı anahtar kontrolü 10 uçta kopyalanmıştı — tek yerde toplandı. */
+function authOk(env, url) {
+  const exp = env.TEST_KEY || env.SYNC_PW || "";
+  return !!exp && (url.searchParams.get("key") || "") === exp;
+}
 function txt(s, status = 200, ct) { return new Response(s, { status, headers: { "Content-Type": ct || "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "GET,POST,OPTIONS" } }); }
 /* ============================================================
    V-11.5 · FINRA KISA POZİSYON (Equity Short Interest)
@@ -727,14 +717,25 @@ function waParts(text) {
   base.forEach(b => waChunk(b, WA_LIM).forEach(x => out.push(x)));
   return out;
 }
+/* V-13.17 (denetim #11): çok parçalı mesajda ikinci parça hata verince iş baştan deneniyor ve
+   birinci parça tekrar gidiyordu. dispatch() çalışan işin adını WA_JOB'a yazıyor; gönderilen
+   parça sayısı KV'de "wa:part:<iş>:<tarih>" altında tutuluyor, yeniden denemede yalnız kalanlar
+   gidiyor. Elle çağrılarda (WA_JOB boş) takip yok, eskisi gibi hepsi gönderilir.
+   (denetim #12): son gönderimin zamanı WA_LAST'ta; dispatch farklı işler arasında bekliyor. */
+let WA_JOB = null, WA_LAST = 0;
 async function sendWA(env, text) {
   const parts = waParts(text);
+  const pk = WA_JOB && env.PORTFOLIO ? "wa:part:" + WA_JOB : null;
+  let done = 0;
+  if (pk) { try { const v = JSON.parse((await env.PORTFOLIO.get(pk)) || "null"); if (v && v.n === parts.length) done = +v.done || 0; } catch (e) {} }
   let last = "";
-  for (let i = 0; i < parts.length; i++) {
+  for (let i = done; i < parts.length; i++) {
+    if (WA_LAST && Date.now() - WA_LAST < 2500) await sleep(2500 - (Date.now() - WA_LAST));   // arka arkaya istekte CallMeBot 403 veriyor
     last = await sendWAOne(env, parts[i]);
-    if (i < parts.length - 1) await sleep(2500);   // arka arkaya istekte CallMeBot 403 veriyor
+    WA_LAST = Date.now();
+    if (pk) { try { await env.PORTFOLIO.put(pk, JSON.stringify({ n: parts.length, done: i + 1 }), { expirationTtl: 172800 }); } catch (e) {} }
   }
-  return last;
+  return last || (done ? "önceki denemede gönderilmişti" : "");
 }
 async function sendWAOne(env, text) {
   const phone = (env.WA_PHONE || "").replace(/[^\d]/g, "");
@@ -1422,7 +1423,7 @@ async function aiProxy(env, request, url) {
    Ek secret'lar (port-notify → Settings → Secrets):
      VAPID_PUBLIC = index.html'deki public anahtarın aynısı
      VAPID_JWK    = private JWK (tek satır JSON, d dahil)
-   Ek cron (Cron Triggers): her 15 dk (ifade: slash-15 boşluk yıldızlar)
+   Ek cron (Cron Triggers): her 30 dk (wrangler.toml [triggers].crons)
    ============================================================ */
 function b64uToBytes(s){ s=String(s||"").replace(/-/g,"+").replace(/_/g,"/"); s+="=".repeat((4-s.length%4)%4); const bin=atob(s); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); return u; }
 function bytesToB64u(u){ const b=new Uint8Array(u); let bin=""; for(let i=0;i<b.length;i++)bin+=String.fromCharCode(b[i]); return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
@@ -1485,7 +1486,7 @@ async function sendPushAll(env, payloadObj){
   return sent;
 }
 function trDateStr(){ const d=new Date(new Date().toLocaleString("en-US",{timeZone:"Europe/Istanbul"})); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
-/* Her 15 dk: canlı fiyat → pozisyon gün içi ±%10 → push (gün içinde tekrar etmez). */
+/* Her 30 dk: canlı fiyat → pozisyon gün içi ±%10 → push (gün içinde tekrar etmez). */
 async function runPushChecks(env, out){
   const state=await fetchState(env); const keys=(state&&state.keys)||{};
   // V-13.7: artık invocation'ın PAYLAŞILAN bütçesiyle çekiliyor — bkz. dispatch() şu açıklama:
@@ -1504,16 +1505,26 @@ async function runPushChecks(env, out){
   const cap=Math.max(1,num(cfg.nfCap)||10);
   const quiet=inQuietHours(cfg);
   let sent=0, lines=[], held=0;
+  /* V-13.17 (denetim #8/#9): önemli bildirim (ödeme, bugünkü bilanço) günlük sınırı da aşar —
+     eskiden hareket bildirimleri sınırı doldurunca ödeme hatırlatması hiç gitmiyordu. Hiçbir
+     cihaza teslim edilemeyen bildirim (abone yok / anahtar uyumsuz) artık "gönderildi"
+     sayılmıyor; bir sonraki koşumda yeniden deneniyor. */
+  let undelivered=0;
   const push=async(o,important)=>{
-    if(sentToday+sent>=cap){ held++; return false; }                    // V-9.9: günlük üst sınır
+    if(!important&&sentToday+sent>=cap){ held++; return false; }        // V-9.9: günlük üst sınır (önemliler hariç)
     if(quiet&&!important){ held++; return false; }                       // V-9.9: sessiz saatler (acil olanlar geçer)
-    try{ await sendPushAll(env,o); sent++; return true; }catch(e){ return false; }
+    try{ const n=await sendPushAll(env,o); if(n>0){ sent++; return true; } undelivered++; return false; }catch(e){ undelivered++; return false; }
   };
+  /* 1) Bugün ödemesi olanlar — V-13.17: en başa alındı. taksitler + abonelikler (ödendi işaretliler atlanır) */
+  try{
+    const pr=await paymentReminders(env, keys, today, alerted, push);
+    if(pr.lines.length) lines=lines.concat(pr.lines);
+  }catch(e){}
   const isClosed=p=>((+p.qty||0)<=1e-6)||((+p.price||0)>0&&Math.abs(+p.qty)*(+p.price)<0.5);
   const grp=p=>p.group||(p.cg?"Crypto":"Stock");
   const positions=(keys.positions||[]).filter(p=>p&&!p.manual&&!isClosed(p));
 
-  /* 1) Gün içi sert hareket — hisse/kripto ve emtia için ayrı eşik */
+  /* 2) Gün içi sert hareket — hisse/kripto ve emtia için ayrı eşik */
   for(const p of positions){
     if(p.day==null)continue;
     const d=+p.day; if(!isFinite(d))continue;
@@ -1525,7 +1536,7 @@ async function runPushChecks(env, out){
       { lines.push(p.t+" "+sg(d,1)+"%"); alerted[kk]=1; }
   }
 
-  /* 2) Bugün / yarın bilanço açıklayacak semboller  (V-10.6: 5 günlük kümülatif uyarı kaldırıldı) */
+  /* 3) Bugün / yarın bilanço açıklayacak semboller  (V-10.6: 5 günlük kümülatif uyarı kaldırıldı) */
   for(const [dt,lbl] of [[trShift(0),"bugün"],[trShift(1),"yarın"]]){
     const list=earningsOn(keys,dt);
     if(!list.length)continue;
@@ -1535,20 +1546,10 @@ async function runPushChecks(env, out){
       { lines.push("earnings "+lbl+" "+list.length); alerted[kk]=1; }
   }
 
-  /* 3) Bugün ödemesi olanlar — taksitler + abonelikler (ödendi işaretliler atlanır) */
-  try{
-    const pr=await paymentReminders(env, keys, today, alerted, push);
-    if(pr.lines.length) lines=lines.concat(pr.lines);
-  }catch(e){}
-
-  /* 4) V-11.2 (#3): pozisyonlar için anlık önemli haber */
-  try{
-    const nl=await newsPushCheck(env, keys, cfg, push);
-    if(nl.length) lines=lines.concat(nl);
-  }catch(e){}
+  /* V-13.17 (denetim #8): haber bildirimleri kaldırıldı — haberler yalnız uygulamanın News sayfasında. */
 
   try{ await env.PORTFOLIO.put("push:alerted", JSON.stringify({date:today, map:alerted, count:sentToday+sent})); }catch(e){}
-  return `gönderilen: ${sent} (bugün toplam ${sentToday+sent}/${cap})${held?` · ${held} bekletildi${quiet?" (sessiz saat)":""}`:""}`+(lines.length?("\n"+lines.join(" · ")):"");
+  return `gönderilen: ${sent} (bugün toplam ${sentToday+sent}/${cap})${held?` · ${held} bekletildi${quiet?" (sessiz saat)":""}`:""}${undelivered?` · ${undelivered} hiçbir cihaza ulaşmadı`:""}`+(lines.length?("\n"+lines.join(" · ")):"");
 }
 /* finPay: bugün ya da 3 gün sonra vadesi gelen (amt>0) taksitleri tarihe göre gruplayıp push atar. */
 async function paymentReminders(env, keys, today, alerted, push){
@@ -1584,7 +1585,7 @@ async function paymentReminders(env, keys, today, alerted, push){
     const tl=Math.round(b.sum).toLocaleString("tr-TR")+"₺";
     const names=[...new Set(b.items)].slice(0,4).join(", ");
     const payload={ title:`💳 Ödeme ${when} · ${tl}`, body:`${b.date} · ${b.items.length} kalem · ${names}`, tag:"pay-"+bk, important:true, url:"/" };
-    const ok = push ? await push(payload,true) : await sendPushAll(env,payload).then(()=>true).catch(()=>false);
+    const ok = push ? await push(payload,true) : await sendPushAll(env,payload).then(n=>n>0).catch(()=>false);
     if(ok){ sent++; lines.push("ödeme "+when+" "+tl); alerted["pay|"+bk]=1; }
   }
   return {sent, lines};
@@ -1826,12 +1827,18 @@ async function dispatch(env, job, dry) {
      işi atlar — yani normal günde bu dal hiçbir ek gönderim yapmaz, yalnız gerçekten kaçırılan
      günlerde devreye girer. */
   if (!one && t.dow >= 1 && t.dow <= 5 && t.hh >= 8 && t.hh < 12) jobs.push(["morning", () => buildMorning(env, send, shared)]);
-  if (want("weekly") || (!one && t.hh === 19 && t.dow === 0)) jobs.push(["weekly", () => buildWeeklyMsg(env, send, shared)]);
-  if (want("pay") || (!one && t.hh === 9)) jobs.push(["pay", () => buildPayMsg(env, send)]);   // V-13.2: pencere 09:00-09:59 (cron gecikince 15 dk'lık pencere kaçıyordu; günde bir kez garantisini "ran:" damgası veriyor)
+  /* V-13.17 (denetim #10): ödeme ve haftalık mesaj da sabah mesajı gibi tek saate bağlı değil —
+     CallMeBot o saatte 403 verirse sonraki tiklerde yeniden deneniyor ("ran:" damgası başarıdan
+     sonra yazıldığı için normal günde ek gönderim olmuyor). */
+  if (want("weekly") || (!one && t.hh >= 19 && t.hh < 22 && t.dow === 0)) jobs.push(["weekly", () => buildWeeklyMsg(env, send, shared)]);
+  if (want("pay") || (!one && t.hh >= 9 && t.hh < 12)) jobs.push(["pay", () => buildPayMsg(env, send)]);   // V-13.2: pencere 09:00-09:59 (cron gecikince 15 dk'lık pencere kaçıyordu; günde bir kez garantisini "ran:" damgası veriyor)
   if (want("backup") || (!one && t.hh === 20 && t.dow === 5)) jobs.push(["backup", () => weeklyBackup(env, send)]);   // V-1.1: haftalık JSON yedeği — önceden yalnız /mailtest ile elle tetikleniyordu, cron'a hiç bağlanmamıştı; V-13.14: artık mail değil Drive'a
   if (one && !jobs.length && one !== "push") log.push("bilinmeyen job: " + one);
   for (const [name, fn] of jobs) {
     if (cron && await ranToday(env, name, t.date)) { log.push(name + ":atlandı"); continue; }
+    /* V-13.17 (denetim #12): aynı koşumda önceki iş WhatsApp gönderdiyse birkaç saniye bekle */
+    if (WA_LAST && Date.now() - WA_LAST < 6000) await sleep(6000 - (Date.now() - WA_LAST));
+    WA_JOB = (cron && !dry) ? name + ":" + t.date : null;
     let res;
     try {
       const r = await fn();
@@ -1846,6 +1853,7 @@ async function dispatch(env, job, dry) {
       if (cron && !dry) await markToday(env, name, t.date);
     }
     catch (e) { res = "HATA " + errStr(e); }
+    WA_JOB = null;
     log.push(name + ":" + res);
     if (!dry) await runLogAdd(env, name + ":" + t.date, hhmm + (one ? " [elle] " : " ") + res, 8);
   }
@@ -2531,58 +2539,6 @@ async function insiderCacheRows(env) {
   } catch (e) { return []; }
 }
 
-/* ---------- V-11.2 (#3): ANLIK ÖNEMLİ HABER PUSH ----------
-   Kaynak: Finnhub company-news (gerçek, kamuya açık). Başlık olduğu gibi gider, yorum eklenmez.
-   · Her koşuda yalnız birkaç sembol taranır (KV imleci ile sırayla) → 50 subrequest sınırı korunur.
-   · Aynı haber bir kez gider (KV "news:sent", gün bazlı).
-   · 8 saatten eski haber gönderilmez — "anlık" olmayan şeyi anlık gibi göstermeyiz.
-   · nfNews=0 ile kapatılır, nfNewsMax koşu başına üst sınırdır. */
-const NEWS_SLICE = 5;
-async function newsPushCheck(env, keys, cfg, push) {
-  if (String(cfg.nfNews) === "0" || cfg.nfNews === false) return [];
-  const fh = apiKeyOf(env, keys, "finnhub");
-  if (!fh || !env.PORTFOLIO) return [];
-  const closed = p => (+p.qty || 0) <= 1e-6;
-  const syms = [...new Set((keys.positions || [])
-    .filter(p => p && !p.manual && !p.cg && !closed(p))
-    .map(p => String(p.t || "").toUpperCase()).filter(Boolean))];
-  if (!syms.length) return [];
-  let cur = 0;
-  try { cur = parseInt((await env.PORTFOLIO.get("news:cursor")) || "0", 10) || 0; } catch (e) {}
-  const pick = [];
-  for (let i = 0; i < Math.min(NEWS_SLICE, syms.length); i++) pick.push(syms[(cur + i) % syms.length]);
-  try { await env.PORTFOLIO.put("news:cursor", String((cur + NEWS_SLICE) % syms.length)); } catch (e) {}
-  const today = trDateStr();
-  let sent = {};
-  try { const raw = await env.PORTFOLIO.get("news:sent"); if (raw) { const o = JSON.parse(raw); if (o && o.date === today) sent = o.map || {}; } } catch (e) {}
-  const from = trShift(-1), to = trShift(0);
-  const maxPer = Math.max(1, num(cfg.nfNewsMax) || 2);
-  const out = [];
-  let n = 0;
-  for (const t of pick) {
-    if (n >= maxPer) break;
-    let j = null;
-    try {
-      const r = await fetch(`https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(t)}&from=${from}&to=${to}&token=${encodeURIComponent(fh)}`, { headers: ua() });
-      if (!r.ok) continue;
-      j = await r.json();
-    } catch (e) { continue; }
-    const it = (Array.isArray(j) ? j : [])
-      .filter(x => x && x.headline && x.datetime)
-      .sort((a, b) => num(b.datetime) - num(a.datetime))[0];
-    if (!it) continue;
-    const ageH = (Date.now() / 1000 - num(it.datetime)) / 3600;
-    if (!(ageH >= 0 && ageH <= 8)) continue;
-    const kk = t + "|" + String(it.id || it.url || it.headline).slice(0, 48);
-    if (sent[kk]) continue;
-    sent[kk] = 1;
-    const body = String(it.headline).slice(0, 170) + (it.source ? (" · " + it.source) : "");
-    if (await push({ title: "📰 " + t, body, tag: "news-" + t, url: "/" })) { out.push("news " + t); n++; }
-    await sleep(1100);
-  }
-  try { await env.PORTFOLIO.put("news:sent", JSON.stringify({ date: today, map: sent })); } catch (e) {}
-  return out;
-}
 /* ---------- V-11.1 (#13): sembol haberleri — sabah mesajına toplu, ayrı push yok ---------- */
 async function newsFor(env, keys, syms, budget) {
   const fh = apiKeyOf(env, keys, "finnhub");
